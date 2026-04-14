@@ -32,14 +32,13 @@ func main() {
 
 	queries := db.New(dbPool)
 	authSvc := authservice.NewService(queries)
+	clientsHandler := &handlers.ClientsHandler{}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthz)
-	mux.Handle("GET /clients/me", middleware.APIKey(authSvc)(http.HandlerFunc(handlers.ClientsHandler{}.GetCurrentClient)))
+	router := NewRouter(clientsHandler, middleware.APIKey(authSvc))
 
 	srv := &http.Server{
 		Addr:    ":8080",
-		Handler: mux,
+		Handler: router,
 	}
 
 	errCh := make(chan error, 1)
@@ -74,9 +73,4 @@ func main() {
 
 	log.Println("closing postgres pool...")
 	log.Println("server gracefully stopped")
-}
-
-func healthz(w http.ResponseWriter, _ *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
 }
