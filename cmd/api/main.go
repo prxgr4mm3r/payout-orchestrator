@@ -8,9 +8,24 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/platform/postgres"
 )
 
 func main() {
+	dbURL := os.Getenv("DB_URL")
+
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer startupCancel()
+
+	dbPool, err := postgres.Open(startupCtx, dbURL)
+	if err != nil {
+		log.Fatalf("open postgres: %v", err)
+	}
+	defer dbPool.Close()
+
+	log.Println("postgres connection is ready")
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
 
@@ -49,6 +64,7 @@ func main() {
 		log.Fatalf("server shutdown error: %v", err)
 	}
 
+	log.Println("closing postgres pool...")
 	log.Println("server gracefully stopped")
 }
 
