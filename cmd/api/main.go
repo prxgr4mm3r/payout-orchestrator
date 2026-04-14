@@ -9,6 +9,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/api/handlers"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/api/middleware"
+	authservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/auth"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/platform/postgres"
 )
 
@@ -26,8 +30,12 @@ func main() {
 
 	log.Println("postgres connection is ready")
 
+	queries := db.New(dbPool)
+	authSvc := authservice.NewService(queries)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
+	mux.Handle("GET /clients/me", middleware.APIKey(authSvc)(http.HandlerFunc(handlers.ClientsHandler{}.GetCurrentClient)))
 
 	srv := &http.Server{
 		Addr:    ":8080",
