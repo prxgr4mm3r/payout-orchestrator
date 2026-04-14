@@ -1,4 +1,7 @@
-DB_URL=postgres://postgres:postgres@localhost:5432/payout?sslmode=disable
+ifneq (,$(wildcard ./.env))
+include .env
+export
+endif
 
 up:
 	docker compose up -d
@@ -16,4 +19,4 @@ sqlc:
 	cd internal/db && sqlc generate
 
 run-api:
-	DB_URL=$(DB_URL) go run ./cmd/api
+	go run ./cmd/api
