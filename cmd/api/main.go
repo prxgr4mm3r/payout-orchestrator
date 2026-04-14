@@ -9,6 +9,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/api/handlers"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/api/middleware"
+	authservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/auth"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/platform/postgres"
 )
 
@@ -26,12 +30,15 @@ func main() {
 
 	log.Println("postgres connection is ready")
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthz)
+	queries := db.New(dbPool)
+	authSvc := authservice.NewService(queries)
+	clientsHandler := &handlers.ClientsHandler{}
+
+	router := NewRouter(clientsHandler, middleware.APIKey(authSvc))
 
 	srv := &http.Server{
 		Addr:    ":8080",
-		Handler: mux,
+		Handler: router,
 	}
 
 	errCh := make(chan error, 1)
@@ -66,9 +73,4 @@ func main() {
 
 	log.Println("closing postgres pool...")
 	log.Println("server gracefully stopped")
-}
-
-func healthz(w http.ResponseWriter, _ *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
 }
