@@ -22,6 +22,7 @@ type FundingSource struct {
 	Name             string
 	Type             string
 	PaymentAccountID string
+	Status           string
 	CreatedAt        pgtype.Timestamptz
 	UpdatedAt        pgtype.Timestamptz
 }
