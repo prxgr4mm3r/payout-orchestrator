@@ -8,6 +8,7 @@ import (
 
 func NewRouter(
 	clientsHandler *handlers.ClientsHandler,
+	fundingSourcesHandler *handlers.FundingSourcesHandler,
 	authMW func(http.Handler) http.Handler,
 ) http.Handler {
 	root := http.NewServeMux()
@@ -15,8 +16,10 @@ func NewRouter(
 
 	protected := http.NewServeMux()
 	protected.HandleFunc("GET /clients/me", clientsHandler.GetCurrentClient)
+	protected.HandleFunc("POST /funding-sources", fundingSourcesHandler.CreateFundingSource)
 
 	root.Handle("GET /clients/", authMW(protected))
+	root.Handle("POST /funding-sources", authMW(protected))
 
 	return root
 }
