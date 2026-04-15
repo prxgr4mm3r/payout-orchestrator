@@ -5,18 +5,26 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/api/auth"
 	fundingservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/fundingsources"
 )
 
-type FundingSourceCreator interface {
+const (
+	defaultFundingSourceListLimit = int32(50)
+	maxFundingSourceListLimit     = int32(100)
+)
+
+type FundingSourceService interface {
 	CreateFundingSource(ctx context.Context, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error)
+	GetFundingSource(ctx context.Context, input fundingservice.GetFundingSourceInput) (fundingservice.FundingSource, error)
+	ListFundingSources(ctx context.Context, input fundingservice.ListFundingSourcesInput) ([]fundingservice.FundingSource, error)
 }
 
 type FundingSourcesHandler struct {
-	creator FundingSourceCreator
+	service FundingSourceService
 }
 
 type createFundingSourceRequest struct {
@@ -36,12 +44,12 @@ type fundingSourceResponse struct {
 	UpdatedAt        string `json:"updated_at"`
 }
 
-func NewFundingSourcesHandler(creator FundingSourceCreator) *FundingSourcesHandler {
-	return &FundingSourcesHandler{creator: creator}
+func NewFundingSourcesHandler(service FundingSourceService) *FundingSourcesHandler {
+	return &FundingSourcesHandler{service: service}
 }
 
 func (h FundingSourcesHandler) CreateFundingSource(w http.ResponseWriter, r *http.Request) {
-	if h.creator == nil {
+	if h.service == nil {
 		http.Error(w, "funding source handler is not configured", http.StatusInternalServerError)
 		return
 	}
@@ -60,7 +68,7 @@ func (h FundingSourcesHandler) CreateFundingSource(w http.ResponseWriter, r *htt
 		return
 	}
 
-	source, err := h.creator.CreateFundingSource(r.Context(), fundingservice.CreateFundingSourceInput{
+	source, err := h.service.CreateFundingSource(r.Context(), fundingservice.CreateFundingSourceInput{
 		ClientID:         client.ID,
 		Name:             req.Name,
 		Type:             req.Type,
@@ -81,7 +89,131 @@ func (h FundingSourcesHandler) CreateFundingSource(w http.ResponseWriter, r *htt
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	if err := json.NewEncoder(w).Encode(fundingSourceResponse{
+	if err := json.NewEncoder(w).Encode(fundingSourceResponseFromService(source)); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
+}
+
+func (h FundingSourcesHandler) GetFundingSource(w http.ResponseWriter, r *http.Request) {
+	if h.service == nil {
+		http.Error(w, "funding source handler is not configured", http.StatusInternalServerError)
+		return
+	}
+
+	client, ok := apiauth.ClientFromContext(r.Context())
+	if !ok {
+		http.Error(w, "client not found in context", http.StatusInternalServerError)
+		return
+	}
+
+	source, err := h.service.GetFundingSource(r.Context(), fundingservice.GetFundingSourceInput{
+		ClientID: client.ID,
+		ID:       r.PathValue("id"),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, fundingservice.ErrFundingSourceNotFound):
+			http.Error(w, "funding source not found", http.StatusNotFound)
+		case errors.Is(err, fundingservice.ErrInvalidSourceID):
+			http.Error(w, "invalid funding source id", http.StatusBadRequest)
+		case errors.Is(err, fundingservice.ErrInvalidClientID):
+			http.Error(w, "client not found in context", http.StatusInternalServerError)
+		default:
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+		}
+
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(fundingSourceResponseFromService(source)); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
+}
+
+func (h FundingSourcesHandler) ListFundingSources(w http.ResponseWriter, r *http.Request) {
+	if h.service == nil {
+		http.Error(w, "funding source handler is not configured", http.StatusInternalServerError)
+		return
+	}
+
+	client, ok := apiauth.ClientFromContext(r.Context())
+	if !ok {
+		http.Error(w, "client not found in context", http.StatusInternalServerError)
+		return
+	}
+
+	limit, offset, err := fundingSourcePagination(r)
+	if err != nil {
+		http.Error(w, "invalid pagination", http.StatusBadRequest)
+		return
+	}
+
+	sources, err := h.service.ListFundingSources(r.Context(), fundingservice.ListFundingSourcesInput{
+		ClientID: client.ID,
+		Limit:    limit,
+		Offset:   offset,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, fundingservice.ErrInvalidPagination):
+			http.Error(w, "invalid pagination", http.StatusBadRequest)
+		case errors.Is(err, fundingservice.ErrInvalidClientID):
+			http.Error(w, "client not found in context", http.StatusInternalServerError)
+		default:
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+		}
+
+		return
+	}
+
+	response := make([]fundingSourceResponse, 0, len(sources))
+	for _, source := range sources {
+		response = append(response, fundingSourceResponseFromService(source))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
+}
+
+func fundingSourcePagination(r *http.Request) (int32, int32, error) {
+	limit, err := int32QueryParam(r, "limit", defaultFundingSourceListLimit)
+	if err != nil {
+		return 0, 0, err
+	}
+	if limit <= 0 || limit > maxFundingSourceListLimit {
+		return 0, 0, fundingservice.ErrInvalidPagination
+	}
+
+	offset, err := int32QueryParam(r, "offset", 0)
+	if err != nil {
+		return 0, 0, err
+	}
+	if offset < 0 {
+		return 0, 0, fundingservice.ErrInvalidPagination
+	}
+
+	return limit, offset, nil
+}
+
+func int32QueryParam(r *http.Request, name string, defaultValue int32) (int32, error) {
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return defaultValue, nil
+	}
+
+	value, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil {
+		return 0, err
+	}
+
+	return int32(value), nil
+}
+
+func fundingSourceResponseFromService(source fundingservice.FundingSource) fundingSourceResponse {
+	return fundingSourceResponse{
 		ID:               source.ID,
 		ClientID:         source.ClientID,
 		Name:             source.Name,
@@ -90,7 +222,5 @@ func (h FundingSourcesHandler) CreateFundingSource(w http.ResponseWriter, r *htt
 		Status:           source.Status,
 		CreatedAt:        source.CreatedAt.Format(time.RFC3339Nano),
 		UpdatedAt:        source.UpdatedAt.Format(time.RFC3339Nano),
-	}); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
 	}
 }
