@@ -19,6 +19,8 @@ func NewRouter(
 	}
 
 	protected("GET /clients/me", clientsHandler.GetCurrentClient)
+	protected("GET /funding-sources", fundingSourcesHandler.ListFundingSources)
+	protected("GET /funding-sources/{id}", fundingSourcesHandler.GetFundingSource)
 	protected("POST /funding-sources", fundingSourcesHandler.CreateFundingSource)
 
 	return root
