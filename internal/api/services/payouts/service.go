@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/platform/pgtypeutil"
 )
 
 var (
@@ -61,14 +62,14 @@ func (s *Service) GetPayout(ctx context.Context, input GetPayoutInput) (Payout, 
 		return Payout{}, errors.New("payout service is not configured")
 	}
 
-	clientID, err := parseUUID(input.ClientID, ErrInvalidClientID)
+	clientID, err := pgtypeutil.ParseUUID(input.ClientID)
 	if err != nil {
-		return Payout{}, err
+		return Payout{}, ErrInvalidClientID
 	}
 
-	payoutID, err := parseUUID(input.ID, ErrInvalidPayoutID)
+	payoutID, err := pgtypeutil.ParseUUID(input.ID)
 	if err != nil {
-		return Payout{}, err
+		return Payout{}, ErrInvalidPayoutID
 	}
 
 	payout, err := s.store.GetPayoutByClientID(ctx, db.GetPayoutByClientIDParams{
@@ -91,9 +92,9 @@ func (s *Service) ListPayouts(ctx context.Context, input ListPayoutsInput) ([]Pa
 		return nil, errors.New("payout service is not configured")
 	}
 
-	clientID, err := parseUUID(input.ClientID, ErrInvalidClientID)
+	clientID, err := pgtypeutil.ParseUUID(input.ClientID)
 	if err != nil {
-		return nil, err
+		return nil, ErrInvalidClientID
 	}
 	if input.Limit <= 0 || input.Offset < 0 {
 		return nil, ErrInvalidPagination
@@ -119,15 +120,6 @@ func (s *Service) ListPayouts(ctx context.Context, input ListPayoutsInput) ([]Pa
 	}
 
 	return result, nil
-}
-
-func parseUUID(raw string, invalidErr error) (pgtype.UUID, error) {
-	var id pgtype.UUID
-	if err := id.Scan(raw); err != nil {
-		return pgtype.UUID{}, invalidErr
-	}
-
-	return id, nil
 }
 
 func payoutFromDB(payout db.Payout) (Payout, error) {
