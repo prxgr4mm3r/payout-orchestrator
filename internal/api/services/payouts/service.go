@@ -2,6 +2,8 @@ package payouts
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"math/big"
 	"strings"
@@ -17,17 +19,21 @@ import (
 var (
 	ErrInvalidClientID        = errors.New("invalid client id")
 	ErrInvalidFundingSourceID = errors.New("invalid funding source id")
+	ErrInvalidIdempotencyKey  = errors.New("invalid idempotency key")
 	ErrInvalidPagination      = errors.New("invalid pagination")
 	ErrInvalidPayout          = errors.New("invalid payout")
 	ErrInvalidPayoutID        = errors.New("invalid payout id")
 	ErrFundingSourceNotFound  = errors.New("funding source not found")
+	ErrIdempotencyConflict    = errors.New("idempotency conflict")
 	ErrPayoutNotFound         = errors.New("payout not found")
 	ErrUnsupportedNumeric     = errors.New("unsupported numeric value")
 )
 
 type PayoutStore interface {
+	CreateIdempotencyKey(ctx context.Context, arg db.CreateIdempotencyKeyParams) (db.IdempotencyKey, error)
 	CreatePayout(ctx context.Context, arg db.CreatePayoutParams) (db.Payout, error)
 	GetFundingSourceByClientID(ctx context.Context, arg db.GetFundingSourceByClientIDParams) (db.FundingSource, error)
+	GetIdempotencyKey(ctx context.Context, arg db.GetIdempotencyKeyParams) (db.IdempotencyKey, error)
 	GetPayoutByClientID(ctx context.Context, arg db.GetPayoutByClientIDParams) (db.Payout, error)
 	ListPayoutsByClientID(ctx context.Context, arg db.ListPayoutsByClientIDParams) ([]db.Payout, error)
 }
@@ -50,6 +56,7 @@ type ListPayoutsInput struct {
 type CreatePayoutInput struct {
 	ClientID        string
 	FundingSourceID string
+	IdempotencyKey  string
 	Amount          string
 	Currency        string
 }
@@ -94,6 +101,40 @@ func (s *Service) CreatePayout(ctx context.Context, input CreatePayoutInput) (Pa
 		return Payout{}, ErrInvalidPayout
 	}
 
+	idempotencyKey := strings.TrimSpace(input.IdempotencyKey)
+	if idempotencyKey == "" {
+		return Payout{}, ErrInvalidIdempotencyKey
+	}
+
+	amountHashValue, err := numericString(amount)
+	if err != nil {
+		return Payout{}, err
+	}
+	requestHash := createPayoutRequestHash(clientID.String(), fundingSourceID.String(), amountHashValue, currency)
+
+	existingKey, err := s.store.GetIdempotencyKey(ctx, db.GetIdempotencyKeyParams{
+		ClientID: clientID,
+		Key:      idempotencyKey,
+	})
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return Payout{}, err
+	}
+	if err == nil {
+		if existingKey.RequestHash != requestHash {
+			return Payout{}, ErrIdempotencyConflict
+		}
+
+		payout, err := s.store.GetPayoutByClientID(ctx, db.GetPayoutByClientIDParams{
+			ClientID: clientID,
+			ID:       existingKey.PayoutID,
+		})
+		if err != nil {
+			return Payout{}, err
+		}
+
+		return payoutFromDB(payout)
+	}
+
 	if _, err := s.store.GetFundingSourceByClientID(ctx, db.GetFundingSourceByClientIDParams{
 		ClientID: clientID,
 		ID:       fundingSourceID,
@@ -112,6 +153,15 @@ func (s *Service) CreatePayout(ctx context.Context, input CreatePayoutInput) (Pa
 		Currency:        currency,
 	})
 	if err != nil {
+		return Payout{}, err
+	}
+
+	if _, err := s.store.CreateIdempotencyKey(ctx, db.CreateIdempotencyKeyParams{
+		Key:         idempotencyKey,
+		ClientID:    clientID,
+		RequestHash: requestHash,
+		PayoutID:    payout.ID,
+	}); err != nil {
 		return Payout{}, err
 	}
 
@@ -237,4 +287,14 @@ func numericString(value pgtype.Numeric) (string, error) {
 
 	point := len(digits) - scale
 	return sign + digits[:point] + "." + digits[point:], nil
+}
+
+func createPayoutRequestHash(clientID, fundingSourceID, amount, currency string) string {
+	hash := sha256.New()
+	for _, part := range []string{clientID, fundingSourceID, amount, currency} {
+		_, _ = hash.Write([]byte(part))
+		_, _ = hash.Write([]byte{0})
+	}
+
+	return hex.EncodeToString(hash.Sum(nil))
 }
