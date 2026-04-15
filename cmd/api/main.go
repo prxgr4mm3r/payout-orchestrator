@@ -12,6 +12,7 @@ import (
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/api/handlers"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/api/middleware"
 	authservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/auth"
+	fundingservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/fundingsources"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/platform/postgres"
 )
@@ -32,9 +33,11 @@ func main() {
 
 	queries := db.New(dbPool)
 	authSvc := authservice.NewService(queries)
+	fundingSourcesSvc := fundingservice.NewService(queries)
 	clientsHandler := &handlers.ClientsHandler{}
+	fundingSourcesHandler := handlers.NewFundingSourcesHandler(fundingSourcesSvc)
 
-	router := NewRouter(clientsHandler, middleware.APIKey(authSvc))
+	router := NewRouter(clientsHandler, fundingSourcesHandler, middleware.APIKey(authSvc))
 
 	srv := &http.Server{
 		Addr:    ":8080",
