@@ -1,30 +1,19 @@
 package main
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/api/auth"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/api/handlers"
-	fundingservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/fundingsources"
 )
-
-type fakeFundingSourceCreator struct {
-	create func(ctx context.Context, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error)
-}
-
-func (f fakeFundingSourceCreator) CreateFundingSource(ctx context.Context, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
-	return f.create(ctx, input)
-}
 
 func TestNewRouterLeavesHealthzPublic(t *testing.T) {
 	t.Parallel()
 
 	authCalled := false
-	router := NewRouter(&handlers.ClientsHandler{}, handlers.NewFundingSourcesHandler(fakeFundingSourceCreator{}), func(next http.Handler) http.Handler {
+	router := NewRouter(&handlers.ClientsHandler{}, func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authCalled = true
 			next.ServeHTTP(w, r)
@@ -54,7 +43,7 @@ func TestNewRouterProtectsClientRoutes(t *testing.T) {
 	}
 
 	authCalled := false
-	router := NewRouter(&handlers.ClientsHandler{}, handlers.NewFundingSourcesHandler(fakeFundingSourceCreator{}), func(next http.Handler) http.Handler {
+	router := NewRouter(&handlers.ClientsHandler{}, func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authCalled = true
 			ctx := apiauth.WithClient(r.Context(), expectedClient)
@@ -73,55 +62,5 @@ func TestNewRouterProtectsClientRoutes(t *testing.T) {
 
 	if !authCalled {
 		t.Fatal("expected clients route to pass through auth middleware")
-	}
-}
-
-func TestNewRouterProtectsFundingSourceRoutes(t *testing.T) {
-	t.Parallel()
-
-	expectedClient := apiauth.Client{
-		ID:   "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
-		Name: "acme",
-	}
-
-	authCalled := false
-	serviceCalled := false
-	router := NewRouter(&handlers.ClientsHandler{}, handlers.NewFundingSourcesHandler(fakeFundingSourceCreator{
-		create: func(_ context.Context, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
-			serviceCalled = true
-			if input.ClientID != expectedClient.ID {
-				t.Fatalf("expected client id %s, got %s", expectedClient.ID, input.ClientID)
-			}
-			if input.Name != "Main account" {
-				t.Fatalf("expected funding source name, got %q", input.Name)
-			}
-
-			return fundingservice.FundingSource{}, nil
-		},
-	}), func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			authCalled = true
-			ctx := apiauth.WithClient(r.Context(), expectedClient)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	})
-
-	req := httptest.NewRequest(http.MethodPost, "/funding-sources", strings.NewReader(`{
-		"name": "Main account",
-		"type": "bank_account",
-		"payment_account_id": "acct_123"
-	}`))
-	rec := httptest.NewRecorder()
-
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected %d, got %d", http.StatusCreated, rec.Code)
-	}
-	if !authCalled {
-		t.Fatal("expected funding source route to pass through auth middleware")
-	}
-	if !serviceCalled {
-		t.Fatal("expected funding source handler to call service")
 	}
 }
