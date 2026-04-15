@@ -10,6 +10,7 @@ import (
 	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/api/auth"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/api/handlers"
 	fundingservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/fundingsources"
+	payoutservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/payouts"
 )
 
 type fakeFundingSourceCreator struct {
@@ -30,11 +31,24 @@ func (f fakeFundingSourceCreator) ListFundingSources(ctx context.Context, input 
 	return f.list(ctx, input)
 }
 
+type fakePayoutReader struct {
+	get  func(ctx context.Context, input payoutservice.GetPayoutInput) (payoutservice.Payout, error)
+	list func(ctx context.Context, input payoutservice.ListPayoutsInput) ([]payoutservice.Payout, error)
+}
+
+func (f fakePayoutReader) GetPayout(ctx context.Context, input payoutservice.GetPayoutInput) (payoutservice.Payout, error) {
+	return f.get(ctx, input)
+}
+
+func (f fakePayoutReader) ListPayouts(ctx context.Context, input payoutservice.ListPayoutsInput) ([]payoutservice.Payout, error) {
+	return f.list(ctx, input)
+}
+
 func TestNewRouterLeavesHealthzPublic(t *testing.T) {
 	t.Parallel()
 
 	authCalled := false
-	router := NewRouter(&handlers.ClientsHandler{}, handlers.NewFundingSourcesHandler(fakeFundingSourceCreator{}), func(next http.Handler) http.Handler {
+	router := NewRouter(&handlers.ClientsHandler{}, handlers.NewFundingSourcesHandler(fakeFundingSourceCreator{}), handlers.NewPayoutsHandler(fakePayoutReader{}), func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authCalled = true
 			next.ServeHTTP(w, r)
@@ -64,7 +78,7 @@ func TestNewRouterProtectsClientRoutes(t *testing.T) {
 	}
 
 	authCalled := false
-	router := NewRouter(&handlers.ClientsHandler{}, handlers.NewFundingSourcesHandler(fakeFundingSourceCreator{}), func(next http.Handler) http.Handler {
+	router := NewRouter(&handlers.ClientsHandler{}, handlers.NewFundingSourcesHandler(fakeFundingSourceCreator{}), handlers.NewPayoutsHandler(fakePayoutReader{}), func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authCalled = true
 			ctx := apiauth.WithClient(r.Context(), expectedClient)
@@ -108,7 +122,7 @@ func TestNewRouterProtectsFundingSourceRoutes(t *testing.T) {
 
 			return fundingservice.FundingSource{}, nil
 		},
-	}), func(next http.Handler) http.Handler {
+	}), handlers.NewPayoutsHandler(fakePayoutReader{}), func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authCalled = true
 			ctx := apiauth.WithClient(r.Context(), expectedClient)
@@ -168,7 +182,7 @@ func TestNewRouterProtectsFundingSourceReadRoutes(t *testing.T) {
 
 			return nil, nil
 		},
-	}), func(next http.Handler) http.Handler {
+	}), handlers.NewPayoutsHandler(fakePayoutReader{}), func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authCalled = true
 			ctx := apiauth.WithClient(r.Context(), expectedClient)
@@ -199,5 +213,71 @@ func TestNewRouterProtectsFundingSourceReadRoutes(t *testing.T) {
 	}
 	if !authCalled {
 		t.Fatal("expected funding source read routes to pass through auth middleware")
+	}
+}
+
+func TestNewRouterProtectsPayoutReadRoutes(t *testing.T) {
+	t.Parallel()
+
+	expectedClient := apiauth.Client{
+		ID:   "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
+		Name: "acme",
+	}
+	expectedPayoutID := "efb98fe4-b75f-4f1d-b9c7-794e66da2abb"
+
+	authCalled := false
+	getCalled := false
+	listCalled := false
+	router := NewRouter(&handlers.ClientsHandler{}, handlers.NewFundingSourcesHandler(fakeFundingSourceCreator{}), handlers.NewPayoutsHandler(fakePayoutReader{
+		get: func(_ context.Context, input payoutservice.GetPayoutInput) (payoutservice.Payout, error) {
+			getCalled = true
+			if input.ClientID != expectedClient.ID {
+				t.Fatalf("expected client id %s, got %s", expectedClient.ID, input.ClientID)
+			}
+			if input.ID != expectedPayoutID {
+				t.Fatalf("expected payout id %s, got %s", expectedPayoutID, input.ID)
+			}
+
+			return payoutservice.Payout{}, nil
+		},
+		list: func(_ context.Context, input payoutservice.ListPayoutsInput) ([]payoutservice.Payout, error) {
+			listCalled = true
+			if input.ClientID != expectedClient.ID {
+				t.Fatalf("expected client id %s, got %s", expectedClient.ID, input.ClientID)
+			}
+
+			return nil, nil
+		},
+	}), func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			authCalled = true
+			ctx := apiauth.WithClient(r.Context(), expectedClient)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	})
+
+	listReq := httptest.NewRequest(http.MethodGet, "/payouts", nil)
+	listRec := httptest.NewRecorder()
+	router.ServeHTTP(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list status %d, got %d", http.StatusOK, listRec.Code)
+	}
+	if !listCalled {
+		t.Fatal("expected list handler to call service")
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/payouts/"+expectedPayoutID, nil)
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("expected get status %d, got %d", http.StatusOK, getRec.Code)
+	}
+	if !getCalled {
+		t.Fatal("expected get handler to call service")
+	}
+	if !authCalled {
+		t.Fatal("expected payout read routes to pass through auth middleware")
 	}
 }
