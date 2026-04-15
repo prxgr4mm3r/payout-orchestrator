@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/platform/pgtypeutil"
 )
 
 var (
@@ -75,8 +75,8 @@ func (s *Service) CreateFundingSource(ctx context.Context, input CreateFundingSo
 		return FundingSource{}, ErrInvalidFundingSource
 	}
 
-	var parsedClientID pgtype.UUID
-	if err := parsedClientID.Scan(input.ClientID); err != nil {
+	parsedClientID, err := pgtypeutil.ParseUUID(input.ClientID)
+	if err != nil {
 		return FundingSource{}, ErrInvalidClientID
 	}
 
@@ -98,14 +98,14 @@ func (s *Service) GetFundingSource(ctx context.Context, input GetFundingSourceIn
 		return FundingSource{}, errors.New("funding source service is not configured")
 	}
 
-	clientID, err := parseUUID(input.ClientID, ErrInvalidClientID)
+	clientID, err := pgtypeutil.ParseUUID(input.ClientID)
 	if err != nil {
-		return FundingSource{}, err
+		return FundingSource{}, ErrInvalidClientID
 	}
 
-	sourceID, err := parseUUID(input.ID, ErrInvalidSourceID)
+	sourceID, err := pgtypeutil.ParseUUID(input.ID)
 	if err != nil {
-		return FundingSource{}, err
+		return FundingSource{}, ErrInvalidSourceID
 	}
 
 	source, err := s.store.GetFundingSourceByClientID(ctx, db.GetFundingSourceByClientIDParams{
@@ -128,9 +128,9 @@ func (s *Service) ListFundingSources(ctx context.Context, input ListFundingSourc
 		return nil, errors.New("funding source service is not configured")
 	}
 
-	clientID, err := parseUUID(input.ClientID, ErrInvalidClientID)
+	clientID, err := pgtypeutil.ParseUUID(input.ClientID)
 	if err != nil {
-		return nil, err
+		return nil, ErrInvalidClientID
 	}
 	if input.Limit <= 0 || input.Offset < 0 {
 		return nil, ErrInvalidPagination
@@ -151,15 +151,6 @@ func (s *Service) ListFundingSources(ctx context.Context, input ListFundingSourc
 	}
 
 	return result, nil
-}
-
-func parseUUID(raw string, invalidErr error) (pgtype.UUID, error) {
-	var id pgtype.UUID
-	if err := id.Scan(raw); err != nil {
-		return pgtype.UUID{}, invalidErr
-	}
-
-	return id, nil
 }
 
 func fundingSourceFromDB(source db.FundingSource) FundingSource {

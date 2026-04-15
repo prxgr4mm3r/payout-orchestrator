@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 	"time"
 
 	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/api/auth"
@@ -179,37 +178,12 @@ func (h FundingSourcesHandler) ListFundingSources(w http.ResponseWriter, r *http
 }
 
 func fundingSourcePagination(r *http.Request) (int32, int32, error) {
-	limit, err := int32QueryParam(r, "limit", defaultFundingSourceListLimit)
+	limit, offset, err := paginationParams(r, defaultFundingSourceListLimit, maxFundingSourceListLimit)
 	if err != nil {
-		return 0, 0, err
-	}
-	if limit <= 0 || limit > maxFundingSourceListLimit {
-		return 0, 0, fundingservice.ErrInvalidPagination
-	}
-
-	offset, err := int32QueryParam(r, "offset", 0)
-	if err != nil {
-		return 0, 0, err
-	}
-	if offset < 0 {
 		return 0, 0, fundingservice.ErrInvalidPagination
 	}
 
 	return limit, offset, nil
-}
-
-func int32QueryParam(r *http.Request, name string, defaultValue int32) (int32, error) {
-	raw := r.URL.Query().Get(name)
-	if raw == "" {
-		return defaultValue, nil
-	}
-
-	value, err := strconv.ParseInt(raw, 10, 32)
-	if err != nil {
-		return 0, err
-	}
-
-	return int32(value), nil
 }
 
 func fundingSourceResponseFromService(source fundingservice.FundingSource) fundingSourceResponse {
