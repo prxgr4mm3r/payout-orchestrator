@@ -178,19 +178,8 @@ func (h FundingSourcesHandler) ListFundingSources(w http.ResponseWriter, r *http
 }
 
 func fundingSourcePagination(r *http.Request) (int32, int32, error) {
-	limit, err := int32QueryParam(r, "limit", defaultFundingSourceListLimit)
+	limit, offset, err := paginationParams(r, defaultFundingSourceListLimit, maxFundingSourceListLimit)
 	if err != nil {
-		return 0, 0, err
-	}
-	if limit <= 0 || limit > maxFundingSourceListLimit {
-		return 0, 0, fundingservice.ErrInvalidPagination
-	}
-
-	offset, err := int32QueryParam(r, "offset", 0)
-	if err != nil {
-		return 0, 0, err
-	}
-	if offset < 0 {
 		return 0, 0, fundingservice.ErrInvalidPagination
 	}
 

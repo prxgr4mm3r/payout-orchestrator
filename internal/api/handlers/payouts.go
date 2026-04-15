@@ -125,19 +125,8 @@ func (h PayoutsHandler) ListPayouts(w http.ResponseWriter, r *http.Request) {
 }
 
 func payoutPagination(r *http.Request) (int32, int32, error) {
-	limit, err := int32QueryParam(r, "limit", defaultPayoutListLimit)
+	limit, offset, err := paginationParams(r, defaultPayoutListLimit, maxPayoutListLimit)
 	if err != nil {
-		return 0, 0, err
-	}
-	if limit <= 0 || limit > maxPayoutListLimit {
-		return 0, 0, payoutservice.ErrInvalidPagination
-	}
-
-	offset, err := int32QueryParam(r, "offset", 0)
-	if err != nil {
-		return 0, 0, err
-	}
-	if offset < 0 {
 		return 0, 0, payoutservice.ErrInvalidPagination
 	}
 
