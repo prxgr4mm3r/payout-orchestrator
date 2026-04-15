@@ -12,13 +12,12 @@ import (
 )
 
 const createFundingSource = `-- name: CreateFundingSource :one
-INSERT INTO funding_sources (id, client_id, name, type, payment_account_id, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-RETURNING id, client_id, name, type, payment_account_id, created_at, updated_at
+INSERT INTO funding_sources (client_id, name, type, payment_account_id)
+VALUES ($1, $2, $3, $4)
+RETURNING id, client_id, name, type, payment_account_id, status, created_at, updated_at
 `
 
 type CreateFundingSourceParams struct {
-	ID               pgtype.UUID
 	ClientID         pgtype.UUID
 	Name             string
 	Type             string
@@ -27,7 +26,6 @@ type CreateFundingSourceParams struct {
 
 func (q *Queries) CreateFundingSource(ctx context.Context, arg CreateFundingSourceParams) (FundingSource, error) {
 	row := q.db.QueryRow(ctx, createFundingSource,
-		arg.ID,
 		arg.ClientID,
 		arg.Name,
 		arg.Type,
@@ -40,18 +38,26 @@ func (q *Queries) CreateFundingSource(ctx context.Context, arg CreateFundingSour
 		&i.Name,
 		&i.Type,
 		&i.PaymentAccountID,
+		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
 }
 
-const getFundingSourceById = `-- name: GetFundingSourceById :one
-SELECT id, client_id, name, type, payment_account_id, created_at, updated_at FROM funding_sources WHERE id = $1
+const getFundingSourceByClientID = `-- name: GetFundingSourceByClientID :one
+SELECT id, client_id, name, type, payment_account_id, status, created_at, updated_at
+FROM funding_sources
+WHERE client_id = $1 AND id = $2
 `
 
-func (q *Queries) GetFundingSourceById(ctx context.Context, id pgtype.UUID) (FundingSource, error) {
-	row := q.db.QueryRow(ctx, getFundingSourceById, id)
+type GetFundingSourceByClientIDParams struct {
+	ClientID pgtype.UUID
+	ID       pgtype.UUID
+}
+
+func (q *Queries) GetFundingSourceByClientID(ctx context.Context, arg GetFundingSourceByClientIDParams) (FundingSource, error) {
+	row := q.db.QueryRow(ctx, getFundingSourceByClientID, arg.ClientID, arg.ID)
 	var i FundingSource
 	err := row.Scan(
 		&i.ID,
@@ -59,24 +65,29 @@ func (q *Queries) GetFundingSourceById(ctx context.Context, id pgtype.UUID) (Fun
 		&i.Name,
 		&i.Type,
 		&i.PaymentAccountID,
+		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
 }
 
-const listFundingSourcesByClientId = `-- name: ListFundingSourcesByClientId :many
-SELECT id, client_id, name, type, payment_account_id, created_at, updated_at FROM funding_sources WHERE client_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
+const listFundingSourcesByClientID = `-- name: ListFundingSourcesByClientID :many
+SELECT id, client_id, name, type, payment_account_id, status, created_at, updated_at
+FROM funding_sources
+WHERE client_id = $1
+ORDER BY created_at DESC, id DESC
+LIMIT $2 OFFSET $3
 `
 
-type ListFundingSourcesByClientIdParams struct {
+type ListFundingSourcesByClientIDParams struct {
 	ClientID pgtype.UUID
 	Limit    int32
 	Offset   int32
 }
 
-func (q *Queries) ListFundingSourcesByClientId(ctx context.Context, arg ListFundingSourcesByClientIdParams) ([]FundingSource, error) {
-	rows, err := q.db.Query(ctx, listFundingSourcesByClientId, arg.ClientID, arg.Limit, arg.Offset)
+func (q *Queries) ListFundingSourcesByClientID(ctx context.Context, arg ListFundingSourcesByClientIDParams) ([]FundingSource, error) {
+	rows, err := q.db.Query(ctx, listFundingSourcesByClientID, arg.ClientID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -90,6 +101,7 @@ func (q *Queries) ListFundingSourcesByClientId(ctx context.Context, arg ListFund
 			&i.Name,
 			&i.Type,
 			&i.PaymentAccountID,
+			&i.Status,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -101,35 +113,4 @@ func (q *Queries) ListFundingSourcesByClientId(ctx context.Context, arg ListFund
 		return nil, err
 	}
 	return items, nil
-}
-
-const updateFundingSource = `-- name: UpdateFundingSource :one
-UPDATE funding_sources SET name = $1, type = $2, payment_account_id = $3, updated_at = NOW() WHERE id = $4 RETURNING id, client_id, name, type, payment_account_id, created_at, updated_at
-`
-
-type UpdateFundingSourceParams struct {
-	Name             string
-	Type             string
-	PaymentAccountID string
-	ID               pgtype.UUID
-}
-
-func (q *Queries) UpdateFundingSource(ctx context.Context, arg UpdateFundingSourceParams) (FundingSource, error) {
-	row := q.db.QueryRow(ctx, updateFundingSource,
-		arg.Name,
-		arg.Type,
-		arg.PaymentAccountID,
-		arg.ID,
-	)
-	var i FundingSource
-	err := row.Scan(
-		&i.ID,
-		&i.ClientID,
-		&i.Name,
-		&i.Type,
-		&i.PaymentAccountID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
 }
