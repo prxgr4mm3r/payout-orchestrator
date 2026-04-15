@@ -12,13 +12,12 @@ import (
 )
 
 const createFundingSource = `-- name: CreateFundingSource :one
-INSERT INTO funding_sources (id, client_id, name, type, payment_account_id)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO funding_sources (client_id, name, type, payment_account_id)
+VALUES ($1, $2, $3, $4)
 RETURNING id, client_id, name, type, payment_account_id, status, created_at, updated_at
 `
 
 type CreateFundingSourceParams struct {
-	ID               pgtype.UUID
 	ClientID         pgtype.UUID
 	Name             string
 	Type             string
@@ -27,7 +26,6 @@ type CreateFundingSourceParams struct {
 
 func (q *Queries) CreateFundingSource(ctx context.Context, arg CreateFundingSourceParams) (FundingSource, error) {
 	row := q.db.QueryRow(ctx, createFundingSource,
-		arg.ID,
 		arg.ClientID,
 		arg.Name,
 		arg.Type,
