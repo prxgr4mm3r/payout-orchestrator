@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,8 +15,13 @@ import (
 )
 
 type fakePayoutReadService struct {
-	get  func(ctx context.Context, input payoutservice.GetPayoutInput) (payoutservice.Payout, error)
-	list func(ctx context.Context, input payoutservice.ListPayoutsInput) ([]payoutservice.Payout, error)
+	create func(ctx context.Context, input payoutservice.CreatePayoutInput) (payoutservice.Payout, error)
+	get    func(ctx context.Context, input payoutservice.GetPayoutInput) (payoutservice.Payout, error)
+	list   func(ctx context.Context, input payoutservice.ListPayoutsInput) ([]payoutservice.Payout, error)
+}
+
+func (f fakePayoutReadService) CreatePayout(ctx context.Context, input payoutservice.CreatePayoutInput) (payoutservice.Payout, error) {
+	return f.create(ctx, input)
 }
 
 func (f fakePayoutReadService) GetPayout(ctx context.Context, input payoutservice.GetPayoutInput) (payoutservice.Payout, error) {
@@ -24,6 +30,112 @@ func (f fakePayoutReadService) GetPayout(ctx context.Context, input payoutservic
 
 func (f fakePayoutReadService) ListPayouts(ctx context.Context, input payoutservice.ListPayoutsInput) ([]payoutservice.Payout, error) {
 	return f.list(ctx, input)
+}
+
+func TestCreatePayoutCreatesForAuthenticatedClient(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC)
+	expectedClientID := "2c97a4da-38a7-46a8-9205-6482d0cfc6fb"
+	expectedFundingSourceID := "b76e34c6-d2da-45b1-a0c1-307bc76918bd"
+
+	handler := NewPayoutsHandler(fakePayoutReadService{
+		create: func(_ context.Context, input payoutservice.CreatePayoutInput) (payoutservice.Payout, error) {
+			if input.ClientID != expectedClientID {
+				t.Fatalf("expected client id %s, got %s", expectedClientID, input.ClientID)
+			}
+			if input.FundingSourceID != expectedFundingSourceID {
+				t.Fatalf("expected funding source id %s, got %s", expectedFundingSourceID, input.FundingSourceID)
+			}
+			if input.Amount != "125.50" {
+				t.Fatalf("expected amount 125.50, got %s", input.Amount)
+			}
+			if input.Currency != "USDC" {
+				t.Fatalf("expected currency USDC, got %s", input.Currency)
+			}
+
+			return servicePayout("efb98fe4-b75f-4f1d-b9c7-794e66da2abb", input.ClientID, "125.50", "USDC", "pending", now), nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/payouts", strings.NewReader(`{
+		"funding_source_id": "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
+		"amount": "125.50",
+		"currency": "USDC"
+	}`))
+	req = req.WithContext(apiauth.WithClient(req.Context(), apiauth.Client{
+		ID:   expectedClientID,
+		Name: "acme",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.CreatePayout(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d: %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+
+	var response payoutResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.ClientID != expectedClientID {
+		t.Fatalf("expected client id %s, got %s", expectedClientID, response.ClientID)
+	}
+	if response.Status != "pending" {
+		t.Fatalf("expected status pending, got %s", response.Status)
+	}
+}
+
+func TestCreatePayoutMapsFundingSourceNotFound(t *testing.T) {
+	t.Parallel()
+
+	handler := NewPayoutsHandler(fakePayoutReadService{
+		create: func(context.Context, payoutservice.CreatePayoutInput) (payoutservice.Payout, error) {
+			return payoutservice.Payout{}, payoutservice.ErrFundingSourceNotFound
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/payouts", strings.NewReader(`{
+		"funding_source_id": "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
+		"amount": "125.50",
+		"currency": "USDC"
+	}`))
+	req = req.WithContext(apiauth.WithClient(req.Context(), apiauth.Client{
+		ID:   "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
+		Name: "acme",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.CreatePayout(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected %d, got %d", http.StatusNotFound, rec.Code)
+	}
+}
+
+func TestCreatePayoutRejectsInvalidJSON(t *testing.T) {
+	t.Parallel()
+
+	handler := NewPayoutsHandler(fakePayoutReadService{
+		create: func(context.Context, payoutservice.CreatePayoutInput) (payoutservice.Payout, error) {
+			t.Fatal("service should not be called for invalid json")
+			return payoutservice.Payout{}, nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/payouts", strings.NewReader(`{`))
+	req = req.WithContext(apiauth.WithClient(req.Context(), apiauth.Client{
+		ID:   "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
+		Name: "acme",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.CreatePayout(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
+	}
 }
 
 func TestGetPayoutFetchesAuthenticatedClientPayout(t *testing.T) {

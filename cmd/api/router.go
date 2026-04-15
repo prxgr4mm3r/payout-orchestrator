@@ -25,6 +25,7 @@ func NewRouter(
 	protected("POST /funding-sources", fundingSourcesHandler.CreateFundingSource)
 	protected("GET /payouts", payoutsHandler.ListPayouts)
 	protected("GET /payouts/{id}", payoutsHandler.GetPayout)
+	protected("POST /payouts", payoutsHandler.CreatePayout)
 
 	return root
 }

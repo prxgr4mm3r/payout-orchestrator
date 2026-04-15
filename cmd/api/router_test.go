@@ -32,8 +32,13 @@ func (f fakeFundingSourceCreator) ListFundingSources(ctx context.Context, input 
 }
 
 type fakePayoutReader struct {
-	get  func(ctx context.Context, input payoutservice.GetPayoutInput) (payoutservice.Payout, error)
-	list func(ctx context.Context, input payoutservice.ListPayoutsInput) ([]payoutservice.Payout, error)
+	create func(ctx context.Context, input payoutservice.CreatePayoutInput) (payoutservice.Payout, error)
+	get    func(ctx context.Context, input payoutservice.GetPayoutInput) (payoutservice.Payout, error)
+	list   func(ctx context.Context, input payoutservice.ListPayoutsInput) ([]payoutservice.Payout, error)
+}
+
+func (f fakePayoutReader) CreatePayout(ctx context.Context, input payoutservice.CreatePayoutInput) (payoutservice.Payout, error) {
+	return f.create(ctx, input)
 }
 
 func (f fakePayoutReader) GetPayout(ctx context.Context, input payoutservice.GetPayoutInput) (payoutservice.Payout, error) {
@@ -279,5 +284,55 @@ func TestNewRouterProtectsPayoutReadRoutes(t *testing.T) {
 	}
 	if !authCalled {
 		t.Fatal("expected payout read routes to pass through auth middleware")
+	}
+}
+
+func TestNewRouterProtectsPayoutCreateRoute(t *testing.T) {
+	t.Parallel()
+
+	expectedClient := apiauth.Client{
+		ID:   "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
+		Name: "acme",
+	}
+
+	authCalled := false
+	serviceCalled := false
+	router := NewRouter(&handlers.ClientsHandler{}, handlers.NewFundingSourcesHandler(fakeFundingSourceCreator{}), handlers.NewPayoutsHandler(fakePayoutReader{
+		create: func(_ context.Context, input payoutservice.CreatePayoutInput) (payoutservice.Payout, error) {
+			serviceCalled = true
+			if input.ClientID != expectedClient.ID {
+				t.Fatalf("expected client id %s, got %s", expectedClient.ID, input.ClientID)
+			}
+			if input.Amount != "125.50" {
+				t.Fatalf("expected amount 125.50, got %s", input.Amount)
+			}
+
+			return payoutservice.Payout{}, nil
+		},
+	}), func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			authCalled = true
+			ctx := apiauth.WithClient(r.Context(), expectedClient)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/payouts", strings.NewReader(`{
+		"funding_source_id": "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
+		"amount": "125.50",
+		"currency": "USDC"
+	}`))
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d", http.StatusCreated, rec.Code)
+	}
+	if !authCalled {
+		t.Fatal("expected payout create route to pass through auth middleware")
+	}
+	if !serviceCalled {
+		t.Fatal("expected payout create handler to call service")
 	}
 }

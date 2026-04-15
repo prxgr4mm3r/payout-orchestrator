@@ -17,6 +17,7 @@ const (
 )
 
 type PayoutReadService interface {
+	CreatePayout(ctx context.Context, input payoutservice.CreatePayoutInput) (payoutservice.Payout, error)
 	GetPayout(ctx context.Context, input payoutservice.GetPayoutInput) (payoutservice.Payout, error)
 	ListPayouts(ctx context.Context, input payoutservice.ListPayoutsInput) ([]payoutservice.Payout, error)
 }
@@ -36,8 +37,62 @@ type payoutResponse struct {
 	UpdatedAt       string `json:"updated_at"`
 }
 
+type createPayoutRequest struct {
+	FundingSourceID string `json:"funding_source_id"`
+	Amount          string `json:"amount"`
+	Currency        string `json:"currency"`
+}
+
 func NewPayoutsHandler(service PayoutReadService) *PayoutsHandler {
 	return &PayoutsHandler{service: service}
+}
+
+func (h PayoutsHandler) CreatePayout(w http.ResponseWriter, r *http.Request) {
+	if h.service == nil {
+		http.Error(w, "payout handler is not configured", http.StatusInternalServerError)
+		return
+	}
+
+	client, ok := apiauth.ClientFromContext(r.Context())
+	if !ok {
+		http.Error(w, "client not found in context", http.StatusInternalServerError)
+		return
+	}
+
+	var req createPayoutRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	payout, err := h.service.CreatePayout(r.Context(), payoutservice.CreatePayoutInput{
+		ClientID:        client.ID,
+		FundingSourceID: req.FundingSourceID,
+		Amount:          req.Amount,
+		Currency:        req.Currency,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, payoutservice.ErrInvalidPayout), errors.Is(err, payoutservice.ErrInvalidFundingSourceID):
+			http.Error(w, "invalid payout", http.StatusBadRequest)
+		case errors.Is(err, payoutservice.ErrFundingSourceNotFound):
+			http.Error(w, "funding source not found", http.StatusNotFound)
+		case errors.Is(err, payoutservice.ErrInvalidClientID):
+			http.Error(w, "client not found in context", http.StatusInternalServerError)
+		default:
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+		}
+
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	if err := json.NewEncoder(w).Encode(payoutResponseFromService(payout)); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
 }
 
 func (h PayoutsHandler) GetPayout(w http.ResponseWriter, r *http.Request) {
