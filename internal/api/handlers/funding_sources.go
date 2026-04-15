@@ -12,7 +12,7 @@ import (
 )
 
 type FundingSourceCreator interface {
-	CreateFundingSource(ctx context.Context, clientID string, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error)
+	CreateFundingSource(ctx context.Context, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error)
 }
 
 type FundingSourcesHandler struct {
@@ -60,7 +60,8 @@ func (h FundingSourcesHandler) CreateFundingSource(w http.ResponseWriter, r *htt
 		return
 	}
 
-	source, err := h.creator.CreateFundingSource(r.Context(), client.ID, fundingservice.CreateFundingSourceInput{
+	source, err := h.creator.CreateFundingSource(r.Context(), fundingservice.CreateFundingSourceInput{
+		ClientID:         client.ID,
 		Name:             req.Name,
 		Type:             req.Type,
 		PaymentAccountID: req.PaymentAccountID,

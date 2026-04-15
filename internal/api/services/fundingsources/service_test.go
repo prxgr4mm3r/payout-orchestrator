@@ -54,7 +54,8 @@ func TestCreateFundingSourcePersistsTrimmedInput(t *testing.T) {
 		},
 	})
 
-	source, err := service.CreateFundingSource(context.Background(), clientID.String(), CreateFundingSourceInput{
+	source, err := service.CreateFundingSource(context.Background(), CreateFundingSourceInput{
+		ClientID:         clientID.String(),
 		Name:             " Main account ",
 		Type:             " bank_account ",
 		PaymentAccountID: " acct_123 ",
@@ -87,7 +88,8 @@ func TestCreateFundingSourceRejectsBlankFields(t *testing.T) {
 		},
 	})
 
-	_, err := service.CreateFundingSource(context.Background(), "2c97a4da-38a7-46a8-9205-6482d0cfc6fb", CreateFundingSourceInput{
+	_, err := service.CreateFundingSource(context.Background(), CreateFundingSourceInput{
+		ClientID:         "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
 		Name:             "Main account",
 		Type:             "",
 		PaymentAccountID: "acct_123",
@@ -107,7 +109,8 @@ func TestCreateFundingSourceRejectsInvalidClientID(t *testing.T) {
 		},
 	})
 
-	_, err := service.CreateFundingSource(context.Background(), "not-a-uuid", CreateFundingSourceInput{
+	_, err := service.CreateFundingSource(context.Background(), CreateFundingSourceInput{
+		ClientID:         "not-a-uuid",
 		Name:             "Main account",
 		Type:             "bank_account",
 		PaymentAccountID: "acct_123",

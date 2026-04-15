@@ -13,11 +13,11 @@ import (
 )
 
 type fakeFundingSourceCreator struct {
-	create func(ctx context.Context, clientID string, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error)
+	create func(ctx context.Context, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error)
 }
 
-func (f fakeFundingSourceCreator) CreateFundingSource(ctx context.Context, clientID string, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
-	return f.create(ctx, clientID, input)
+func (f fakeFundingSourceCreator) CreateFundingSource(ctx context.Context, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
+	return f.create(ctx, input)
 }
 
 func TestNewRouterLeavesHealthzPublic(t *testing.T) {
@@ -87,10 +87,10 @@ func TestNewRouterProtectsFundingSourceRoutes(t *testing.T) {
 	authCalled := false
 	serviceCalled := false
 	router := NewRouter(&handlers.ClientsHandler{}, handlers.NewFundingSourcesHandler(fakeFundingSourceCreator{
-		create: func(_ context.Context, clientID string, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
+		create: func(_ context.Context, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
 			serviceCalled = true
-			if clientID != expectedClient.ID {
-				t.Fatalf("expected client id %s, got %s", expectedClient.ID, clientID)
+			if input.ClientID != expectedClient.ID {
+				t.Fatalf("expected client id %s, got %s", expectedClient.ID, input.ClientID)
 			}
 			if input.Name != "Main account" {
 				t.Fatalf("expected funding source name, got %q", input.Name)

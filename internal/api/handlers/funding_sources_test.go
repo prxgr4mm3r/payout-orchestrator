@@ -15,11 +15,11 @@ import (
 )
 
 type fakeFundingSourceCreator struct {
-	create func(ctx context.Context, clientID string, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error)
+	create func(ctx context.Context, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error)
 }
 
-func (f fakeFundingSourceCreator) CreateFundingSource(ctx context.Context, clientID string, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
-	return f.create(ctx, clientID, input)
+func (f fakeFundingSourceCreator) CreateFundingSource(ctx context.Context, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
+	return f.create(ctx, input)
 }
 
 func TestCreateFundingSourceCreatesForAuthenticatedClient(t *testing.T) {
@@ -29,9 +29,9 @@ func TestCreateFundingSourceCreatesForAuthenticatedClient(t *testing.T) {
 	expectedClientID := "2c97a4da-38a7-46a8-9205-6482d0cfc6fb"
 
 	handler := NewFundingSourcesHandler(fakeFundingSourceCreator{
-		create: func(_ context.Context, clientID string, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
-			if clientID != expectedClientID {
-				t.Fatalf("expected client id %s, got %s", expectedClientID, clientID)
+		create: func(_ context.Context, input fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
+			if input.ClientID != expectedClientID {
+				t.Fatalf("expected client id %s, got %s", expectedClientID, input.ClientID)
 			}
 			if input.Name != "Main account" {
 				t.Fatalf("expected name Main account, got %q", input.Name)
@@ -45,7 +45,7 @@ func TestCreateFundingSourceCreatesForAuthenticatedClient(t *testing.T) {
 
 			return fundingservice.FundingSource{
 				ID:               "efb98fe4-b75f-4f1d-b9c7-794e66da2abb",
-				ClientID:         clientID,
+				ClientID:         input.ClientID,
 				Name:             input.Name,
 				Type:             input.Type,
 				PaymentAccountID: input.PaymentAccountID,
@@ -95,7 +95,7 @@ func TestCreateFundingSourceRejectsInvalidJSON(t *testing.T) {
 	t.Parallel()
 
 	handler := NewFundingSourcesHandler(fakeFundingSourceCreator{
-		create: func(context.Context, string, fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
+		create: func(context.Context, fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
 			t.Fatal("service should not be called for invalid json")
 			return fundingservice.FundingSource{}, nil
 		},
@@ -119,7 +119,7 @@ func TestCreateFundingSourceMapsValidationErrors(t *testing.T) {
 	t.Parallel()
 
 	handler := NewFundingSourcesHandler(fakeFundingSourceCreator{
-		create: func(context.Context, string, fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
+		create: func(context.Context, fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
 			return fundingservice.FundingSource{}, fundingservice.ErrInvalidFundingSource
 		},
 	})
@@ -146,7 +146,7 @@ func TestCreateFundingSourceRequiresAuthenticatedClient(t *testing.T) {
 	t.Parallel()
 
 	handler := NewFundingSourcesHandler(fakeFundingSourceCreator{
-		create: func(context.Context, string, fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
+		create: func(context.Context, fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
 			t.Fatal("service should not be called without authenticated client")
 			return fundingservice.FundingSource{}, nil
 		},
@@ -170,7 +170,7 @@ func TestCreateFundingSourceMapsUnexpectedErrors(t *testing.T) {
 	t.Parallel()
 
 	handler := NewFundingSourcesHandler(fakeFundingSourceCreator{
-		create: func(context.Context, string, fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
+		create: func(context.Context, fundingservice.CreateFundingSourceInput) (fundingservice.FundingSource, error) {
 			return fundingservice.FundingSource{}, errors.New("database unavailable")
 		},
 	})

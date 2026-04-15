@@ -25,6 +25,7 @@ type Service struct {
 }
 
 type CreateFundingSourceInput struct {
+	ClientID         string
 	Name             string
 	Type             string
 	PaymentAccountID string
@@ -45,7 +46,7 @@ func NewService(store FundingSourceStore) *Service {
 	return &Service{store: store}
 }
 
-func (s *Service) CreateFundingSource(ctx context.Context, clientID string, input CreateFundingSourceInput) (FundingSource, error) {
+func (s *Service) CreateFundingSource(ctx context.Context, input CreateFundingSourceInput) (FundingSource, error) {
 	if s == nil || s.store == nil {
 		return FundingSource{}, errors.New("funding source service is not configured")
 	}
@@ -58,7 +59,7 @@ func (s *Service) CreateFundingSource(ctx context.Context, clientID string, inpu
 	}
 
 	var parsedClientID pgtype.UUID
-	if err := parsedClientID.Scan(clientID); err != nil {
+	if err := parsedClientID.Scan(input.ClientID); err != nil {
 		return FundingSource{}, ErrInvalidClientID
 	}
 
