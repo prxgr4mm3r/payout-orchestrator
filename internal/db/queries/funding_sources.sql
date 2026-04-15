@@ -1,14 +1,16 @@
 -- name: CreateFundingSource :one
-INSERT INTO funding_sources (id, client_id, name, type, payment_account_id, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-RETURNING *;
+INSERT INTO funding_sources (id, client_id, name, type, payment_account_id)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, client_id, name, type, payment_account_id, status, created_at, updated_at;
 
--- name: GetFundingSourceById :one
-SELECT * FROM funding_sources WHERE id = $1;
+-- name: GetFundingSourceByClientID :one
+SELECT id, client_id, name, type, payment_account_id, status, created_at, updated_at
+FROM funding_sources
+WHERE client_id = $1 AND id = $2;
 
--- name: ListFundingSourcesByClientId :many
-SELECT * FROM funding_sources WHERE client_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
-
--- name: UpdateFundingSource :one
-UPDATE funding_sources SET name = $1, type = $2, payment_account_id = $3, updated_at = NOW() WHERE id = $4 RETURNING *; 
-
+-- name: ListFundingSourcesByClientID :many
+SELECT id, client_id, name, type, payment_account_id, status, created_at, updated_at
+FROM funding_sources
+WHERE client_id = $1
+ORDER BY created_at DESC, id DESC
+LIMIT $2 OFFSET $3;
