@@ -15,14 +15,19 @@ import (
 )
 
 var (
-	ErrInvalidClientID    = errors.New("invalid client id")
-	ErrInvalidPagination  = errors.New("invalid pagination")
-	ErrInvalidPayoutID    = errors.New("invalid payout id")
-	ErrPayoutNotFound     = errors.New("payout not found")
-	ErrUnsupportedNumeric = errors.New("unsupported numeric value")
+	ErrInvalidClientID        = errors.New("invalid client id")
+	ErrInvalidFundingSourceID = errors.New("invalid funding source id")
+	ErrInvalidPagination      = errors.New("invalid pagination")
+	ErrInvalidPayout          = errors.New("invalid payout")
+	ErrInvalidPayoutID        = errors.New("invalid payout id")
+	ErrFundingSourceNotFound  = errors.New("funding source not found")
+	ErrPayoutNotFound         = errors.New("payout not found")
+	ErrUnsupportedNumeric     = errors.New("unsupported numeric value")
 )
 
 type PayoutStore interface {
+	CreatePayout(ctx context.Context, arg db.CreatePayoutParams) (db.Payout, error)
+	GetFundingSourceByClientID(ctx context.Context, arg db.GetFundingSourceByClientIDParams) (db.FundingSource, error)
 	GetPayoutByClientID(ctx context.Context, arg db.GetPayoutByClientIDParams) (db.Payout, error)
 	ListPayoutsByClientID(ctx context.Context, arg db.ListPayoutsByClientIDParams) ([]db.Payout, error)
 }
@@ -42,6 +47,13 @@ type ListPayoutsInput struct {
 	Offset   int32
 }
 
+type CreatePayoutInput struct {
+	ClientID        string
+	FundingSourceID string
+	Amount          string
+	Currency        string
+}
+
 type Payout struct {
 	ID              string
 	ClientID        string
@@ -55,6 +67,55 @@ type Payout struct {
 
 func NewService(store PayoutStore) *Service {
 	return &Service{store: store}
+}
+
+func (s *Service) CreatePayout(ctx context.Context, input CreatePayoutInput) (Payout, error) {
+	if s == nil || s.store == nil {
+		return Payout{}, errors.New("payout service is not configured")
+	}
+
+	clientID, err := pgtypeutil.ParseUUID(input.ClientID)
+	if err != nil {
+		return Payout{}, ErrInvalidClientID
+	}
+
+	fundingSourceID, err := pgtypeutil.ParseUUID(input.FundingSourceID)
+	if err != nil {
+		return Payout{}, ErrInvalidFundingSourceID
+	}
+
+	amount, err := parsePositiveNumeric(input.Amount)
+	if err != nil {
+		return Payout{}, ErrInvalidPayout
+	}
+
+	currency := strings.TrimSpace(input.Currency)
+	if currency == "" || len(currency) > 12 {
+		return Payout{}, ErrInvalidPayout
+	}
+
+	if _, err := s.store.GetFundingSourceByClientID(ctx, db.GetFundingSourceByClientIDParams{
+		ClientID: clientID,
+		ID:       fundingSourceID,
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Payout{}, ErrFundingSourceNotFound
+		}
+
+		return Payout{}, err
+	}
+
+	payout, err := s.store.CreatePayout(ctx, db.CreatePayoutParams{
+		ClientID:        clientID,
+		FundingSourceID: fundingSourceID,
+		Amount:          amount,
+		Currency:        currency,
+	})
+	if err != nil {
+		return Payout{}, err
+	}
+
+	return payoutFromDB(payout)
 }
 
 func (s *Service) GetPayout(ctx context.Context, input GetPayoutInput) (Payout, error) {
@@ -120,6 +181,18 @@ func (s *Service) ListPayouts(ctx context.Context, input ListPayoutsInput) ([]Pa
 	}
 
 	return result, nil
+}
+
+func parsePositiveNumeric(raw string) (pgtype.Numeric, error) {
+	var amount pgtype.Numeric
+	if err := amount.Scan(strings.TrimSpace(raw)); err != nil {
+		return pgtype.Numeric{}, err
+	}
+	if !amount.Valid || amount.Int == nil || amount.NaN || amount.InfinityModifier != pgtype.Finite || amount.Int.Sign() <= 0 {
+		return pgtype.Numeric{}, ErrInvalidPayout
+	}
+
+	return amount, nil
 }
 
 func payoutFromDB(payout db.Payout) (Payout, error) {

@@ -15,8 +15,18 @@ import (
 )
 
 type fakePayoutStore struct {
-	get  func(ctx context.Context, arg db.GetPayoutByClientIDParams) (db.Payout, error)
-	list func(ctx context.Context, arg db.ListPayoutsByClientIDParams) ([]db.Payout, error)
+	create           func(ctx context.Context, arg db.CreatePayoutParams) (db.Payout, error)
+	get              func(ctx context.Context, arg db.GetPayoutByClientIDParams) (db.Payout, error)
+	getFundingSource func(ctx context.Context, arg db.GetFundingSourceByClientIDParams) (db.FundingSource, error)
+	list             func(ctx context.Context, arg db.ListPayoutsByClientIDParams) ([]db.Payout, error)
+}
+
+func (f fakePayoutStore) CreatePayout(ctx context.Context, arg db.CreatePayoutParams) (db.Payout, error) {
+	return f.create(ctx, arg)
+}
+
+func (f fakePayoutStore) GetFundingSourceByClientID(ctx context.Context, arg db.GetFundingSourceByClientIDParams) (db.FundingSource, error) {
+	return f.getFundingSource(ctx, arg)
 }
 
 func (f fakePayoutStore) GetPayoutByClientID(ctx context.Context, arg db.GetPayoutByClientIDParams) (db.Payout, error) {
@@ -25,6 +35,106 @@ func (f fakePayoutStore) GetPayoutByClientID(ctx context.Context, arg db.GetPayo
 
 func (f fakePayoutStore) ListPayoutsByClientID(ctx context.Context, arg db.ListPayoutsByClientIDParams) ([]db.Payout, error) {
 	return f.list(ctx, arg)
+}
+
+func TestCreatePayoutValidatesFundingSourceOwnership(t *testing.T) {
+	t.Parallel()
+
+	clientID := mustUUID(t, "2c97a4da-38a7-46a8-9205-6482d0cfc6fb")
+	payoutID := mustUUID(t, "efb98fe4-b75f-4f1d-b9c7-794e66da2abb")
+	fundingSourceID := mustUUID(t, "b76e34c6-d2da-45b1-a0c1-307bc76918bd")
+	now := time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC)
+
+	service := NewService(fakePayoutStore{
+		getFundingSource: func(_ context.Context, arg db.GetFundingSourceByClientIDParams) (db.FundingSource, error) {
+			if arg.ClientID != clientID {
+				t.Fatalf("expected client id %s, got %s", clientID.String(), arg.ClientID.String())
+			}
+			if arg.ID != fundingSourceID {
+				t.Fatalf("expected funding source id %s, got %s", fundingSourceID.String(), arg.ID.String())
+			}
+
+			return db.FundingSource{ID: fundingSourceID, ClientID: clientID}, nil
+		},
+		create: func(_ context.Context, arg db.CreatePayoutParams) (db.Payout, error) {
+			if arg.ClientID != clientID {
+				t.Fatalf("expected client id %s, got %s", clientID.String(), arg.ClientID.String())
+			}
+			if arg.FundingSourceID != fundingSourceID {
+				t.Fatalf("expected funding source id %s, got %s", fundingSourceID.String(), arg.FundingSourceID.String())
+			}
+			if got, err := numericString(arg.Amount); err != nil || got != "125.50" {
+				t.Fatalf("expected amount 125.50, got %s: %v", got, err)
+			}
+			if arg.Currency != "USDC" {
+				t.Fatalf("expected currency USDC, got %s", arg.Currency)
+			}
+
+			return dbPayout(payoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", now), nil
+		},
+	})
+
+	payout, err := service.CreatePayout(context.Background(), CreatePayoutInput{
+		ClientID:        clientID.String(),
+		FundingSourceID: fundingSourceID.String(),
+		Amount:          "125.50",
+		Currency:        " USDC ",
+	})
+	if err != nil {
+		t.Fatalf("create payout: %v", err)
+	}
+
+	if payout.ID != payoutID.String() {
+		t.Fatalf("expected id %s, got %s", payoutID.String(), payout.ID)
+	}
+	if payout.Status != "pending" {
+		t.Fatalf("expected status pending, got %s", payout.Status)
+	}
+}
+
+func TestCreatePayoutRejectsUnownedFundingSource(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(fakePayoutStore{
+		getFundingSource: func(context.Context, db.GetFundingSourceByClientIDParams) (db.FundingSource, error) {
+			return db.FundingSource{}, pgx.ErrNoRows
+		},
+		create: func(context.Context, db.CreatePayoutParams) (db.Payout, error) {
+			t.Fatal("store should not create payout for unowned funding source")
+			return db.Payout{}, nil
+		},
+	})
+
+	_, err := service.CreatePayout(context.Background(), CreatePayoutInput{
+		ClientID:        "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
+		FundingSourceID: "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
+		Amount:          "125.50",
+		Currency:        "USDC",
+	})
+	if !errors.Is(err, ErrFundingSourceNotFound) {
+		t.Fatalf("expected ErrFundingSourceNotFound, got %v", err)
+	}
+}
+
+func TestCreatePayoutRejectsInvalidInput(t *testing.T) {
+	t.Parallel()
+
+	service := NewService(fakePayoutStore{
+		getFundingSource: func(context.Context, db.GetFundingSourceByClientIDParams) (db.FundingSource, error) {
+			t.Fatal("store should not be called for invalid payout")
+			return db.FundingSource{}, nil
+		},
+	})
+
+	_, err := service.CreatePayout(context.Background(), CreatePayoutInput{
+		ClientID:        "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
+		FundingSourceID: "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
+		Amount:          "0",
+		Currency:        "USDC",
+	})
+	if !errors.Is(err, ErrInvalidPayout) {
+		t.Fatalf("expected ErrInvalidPayout, got %v", err)
+	}
 }
 
 func TestGetPayoutLoadsClientScopedPayout(t *testing.T) {
