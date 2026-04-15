@@ -12,28 +12,24 @@ import (
 )
 
 const createPayout = `-- name: CreatePayout :one
-INSERT INTO payouts (id, client_id, funding_source_id, amount, currency, status, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+INSERT INTO payouts (client_id, funding_source_id, amount, currency)
+VALUES ($1, $2, $3, $4)
 RETURNING id, client_id, funding_source_id, amount, currency, status, created_at, updated_at
 `
 
 type CreatePayoutParams struct {
-	ID              pgtype.UUID
 	ClientID        pgtype.UUID
 	FundingSourceID pgtype.UUID
 	Amount          pgtype.Numeric
 	Currency        string
-	Status          string
 }
 
 func (q *Queries) CreatePayout(ctx context.Context, arg CreatePayoutParams) (Payout, error) {
 	row := q.db.QueryRow(ctx, createPayout,
-		arg.ID,
 		arg.ClientID,
 		arg.FundingSourceID,
 		arg.Amount,
 		arg.Currency,
-		arg.Status,
 	)
 	var i Payout
 	err := row.Scan(
@@ -49,12 +45,19 @@ func (q *Queries) CreatePayout(ctx context.Context, arg CreatePayoutParams) (Pay
 	return i, err
 }
 
-const getPayoutById = `-- name: GetPayoutById :one
-SELECT id, client_id, funding_source_id, amount, currency, status, created_at, updated_at FROM payouts WHERE id = $1
+const getPayoutByClientID = `-- name: GetPayoutByClientID :one
+SELECT id, client_id, funding_source_id, amount, currency, status, created_at, updated_at
+FROM payouts
+WHERE client_id = $1 AND id = $2
 `
 
-func (q *Queries) GetPayoutById(ctx context.Context, id pgtype.UUID) (Payout, error) {
-	row := q.db.QueryRow(ctx, getPayoutById, id)
+type GetPayoutByClientIDParams struct {
+	ClientID pgtype.UUID
+	ID       pgtype.UUID
+}
+
+func (q *Queries) GetPayoutByClientID(ctx context.Context, arg GetPayoutByClientIDParams) (Payout, error) {
+	row := q.db.QueryRow(ctx, getPayoutByClientID, arg.ClientID, arg.ID)
 	var i Payout
 	err := row.Scan(
 		&i.ID,
@@ -69,18 +72,22 @@ func (q *Queries) GetPayoutById(ctx context.Context, id pgtype.UUID) (Payout, er
 	return i, err
 }
 
-const listPayoutsByClientId = `-- name: ListPayoutsByClientId :many
-SELECT id, client_id, funding_source_id, amount, currency, status, created_at, updated_at FROM payouts WHERE client_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
+const listPayoutsByClientID = `-- name: ListPayoutsByClientID :many
+SELECT id, client_id, funding_source_id, amount, currency, status, created_at, updated_at
+FROM payouts
+WHERE client_id = $1
+ORDER BY created_at DESC, id DESC
+LIMIT $2 OFFSET $3
 `
 
-type ListPayoutsByClientIdParams struct {
+type ListPayoutsByClientIDParams struct {
 	ClientID pgtype.UUID
 	Limit    int32
 	Offset   int32
 }
 
-func (q *Queries) ListPayoutsByClientId(ctx context.Context, arg ListPayoutsByClientIdParams) ([]Payout, error) {
-	rows, err := q.db.Query(ctx, listPayoutsByClientId, arg.ClientID, arg.Limit, arg.Offset)
+func (q *Queries) ListPayoutsByClientID(ctx context.Context, arg ListPayoutsByClientIDParams) ([]Payout, error) {
+	rows, err := q.db.Query(ctx, listPayoutsByClientID, arg.ClientID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +116,10 @@ func (q *Queries) ListPayoutsByClientId(ctx context.Context, arg ListPayoutsByCl
 }
 
 const updatePayoutStatus = `-- name: UpdatePayoutStatus :one
-UPDATE payouts SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING id, client_id, funding_source_id, amount, currency, status, created_at, updated_at
+UPDATE payouts
+SET status = $1, updated_at = NOW()
+WHERE id = $2
+RETURNING id, client_id, funding_source_id, amount, currency, status, created_at, updated_at
 `
 
 type UpdatePayoutStatusParams struct {
