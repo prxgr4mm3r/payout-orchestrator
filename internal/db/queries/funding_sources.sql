@@ -1,6 +1,6 @@
 -- name: CreateFundingSource :one
-INSERT INTO funding_sources (id, client_id, name, type, payment_account_id)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO funding_sources (client_id, name, type, payment_account_id)
+VALUES ($1, $2, $3, $4)
 RETURNING id, client_id, name, type, payment_account_id, status, created_at, updated_at;
 
 -- name: GetFundingSourceByClientID :one
