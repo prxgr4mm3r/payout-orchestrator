@@ -14,12 +14,12 @@ func NewRouter(
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", healthz)
 
-	protected := http.NewServeMux()
-	protected.HandleFunc("GET /clients/me", clientsHandler.GetCurrentClient)
-	protected.HandleFunc("POST /funding-sources", fundingSourcesHandler.CreateFundingSource)
+	protected := func(pattern string, handler http.HandlerFunc) {
+		root.Handle(pattern, authMW(http.HandlerFunc(handler)))
+	}
 
-	root.Handle("GET /clients/", authMW(protected))
-	root.Handle("POST /funding-sources", authMW(protected))
+	protected("GET /clients/me", clientsHandler.GetCurrentClient)
+	protected("POST /funding-sources", fundingSourcesHandler.CreateFundingSource)
 
 	return root
 }
