@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS payouts (
     client_id UUID NOT NULL,
     funding_source_id UUID NOT NULL,
     amount NUMERIC(10, 2) NOT NULL CHECK (amount > 0),
-    currency CHAR(3) NOT NULL,
+    currency VARCHAR(12) NOT NULL,
     status VARCHAR(50) NOT NULL DEFAULT 'pending',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
