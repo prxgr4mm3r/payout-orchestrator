@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"math/big"
 	"strings"
@@ -32,8 +33,11 @@ var (
 
 var errConcurrentIdempotencyKeyInsert = errors.New("concurrent idempotency key insert")
 
+const payoutCreatedOutboxEventType = "process_payout"
+
 type PayoutStore interface {
 	CreateIdempotencyKey(ctx context.Context, arg db.CreateIdempotencyKeyParams) (db.IdempotencyKey, error)
+	CreateOutboxEvent(ctx context.Context, arg db.CreateOutboxEventParams) (db.OutboxEvent, error)
 	CreatePayout(ctx context.Context, arg db.CreatePayoutParams) (db.Payout, error)
 	GetFundingSourceByClientID(ctx context.Context, arg db.GetFundingSourceByClientIDParams) (db.FundingSource, error)
 	GetIdempotencyKey(ctx context.Context, arg db.GetIdempotencyKeyParams) (db.IdempotencyKey, error)
@@ -78,6 +82,11 @@ type Payout struct {
 	Status          string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+}
+
+type payoutCreatedOutboxPayload struct {
+	PayoutID string `json:"payout_id"`
+	ClientID string `json:"client_id"`
 }
 
 func NewService(store PayoutStore) *Service {
@@ -173,6 +182,19 @@ func (s *Service) CreatePayout(ctx context.Context, input CreatePayoutInput) (Pa
 				return errConcurrentIdempotencyKeyInsert
 			}
 
+			return err
+		}
+
+		payload, err := marshalPayoutCreatedOutboxPayload(created)
+		if err != nil {
+			return err
+		}
+
+		if _, err := store.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
+			EventType: payoutCreatedOutboxEventType,
+			EntityID:  created.ID,
+			Payload:   payload,
+		}); err != nil {
 			return err
 		}
 
@@ -308,6 +330,13 @@ func numericString(value pgtype.Numeric) (string, error) {
 
 	point := len(digits) - scale
 	return sign + digits[:point] + "." + digits[point:], nil
+}
+
+func marshalPayoutCreatedOutboxPayload(payout db.Payout) ([]byte, error) {
+	return json.Marshal(payoutCreatedOutboxPayload{
+		PayoutID: payout.ID.String(),
+		ClientID: payout.ClientID.String(),
+	})
 }
 
 func createPayoutRequestHash(clientID, fundingSourceID, amount, currency string) string {
