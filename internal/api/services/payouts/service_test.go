@@ -17,6 +17,7 @@ import (
 
 type fakePayoutStore struct {
 	createIdempotency func(ctx context.Context, arg db.CreateIdempotencyKeyParams) (db.IdempotencyKey, error)
+	createOutbox      func(ctx context.Context, arg db.CreateOutboxEventParams) (db.OutboxEvent, error)
 	create            func(ctx context.Context, arg db.CreatePayoutParams) (db.Payout, error)
 	get               func(ctx context.Context, arg db.GetPayoutByClientIDParams) (db.Payout, error)
 	getFundingSource  func(ctx context.Context, arg db.GetFundingSourceByClientIDParams) (db.FundingSource, error)
@@ -34,6 +35,10 @@ func (f fakeTxRunner) WithinTx(ctx context.Context, fn func(store PayoutStore) e
 
 func (f fakePayoutStore) CreateIdempotencyKey(ctx context.Context, arg db.CreateIdempotencyKeyParams) (db.IdempotencyKey, error) {
 	return f.createIdempotency(ctx, arg)
+}
+
+func (f fakePayoutStore) CreateOutboxEvent(ctx context.Context, arg db.CreateOutboxEventParams) (db.OutboxEvent, error) {
+	return f.createOutbox(ctx, arg)
 }
 
 func (f fakePayoutStore) CreatePayout(ctx context.Context, arg db.CreatePayoutParams) (db.Payout, error) {
@@ -117,6 +122,25 @@ func TestCreatePayoutValidatesFundingSourceOwnership(t *testing.T) {
 			}
 
 			return db.IdempotencyKey{Key: arg.Key, ClientID: arg.ClientID, RequestHash: arg.RequestHash, PayoutID: arg.PayoutID}, nil
+		},
+		createOutbox: func(_ context.Context, arg db.CreateOutboxEventParams) (db.OutboxEvent, error) {
+			if arg.EventType != payoutCreatedOutboxEventType {
+				t.Fatalf("expected outbox event type %s, got %s", payoutCreatedOutboxEventType, arg.EventType)
+			}
+			if arg.EntityID != payoutID {
+				t.Fatalf("expected outbox entity id %s, got %s", payoutID.String(), arg.EntityID.String())
+			}
+			wantPayload := `{"payout_id":"` + payoutID.String() + `","client_id":"` + clientID.String() + `"}`
+			if string(arg.Payload) != wantPayload {
+				t.Fatalf("expected outbox payload %s, got %s", wantPayload, string(arg.Payload))
+			}
+
+			return db.OutboxEvent{
+				EventType: arg.EventType,
+				EntityID:  arg.EntityID,
+				Payload:   arg.Payload,
+				Status:    "pending",
+			}, nil
 		},
 	})
 
@@ -358,6 +382,16 @@ func TestCreatePayoutUsesTransactionalStore(t *testing.T) {
 		createIdempotency: func(context.Context, db.CreateIdempotencyKeyParams) (db.IdempotencyKey, error) {
 			return db.IdempotencyKey{}, nil
 		},
+		createOutbox: func(_ context.Context, arg db.CreateOutboxEventParams) (db.OutboxEvent, error) {
+			if arg.EventType != payoutCreatedOutboxEventType {
+				t.Fatalf("expected outbox event type %s, got %s", payoutCreatedOutboxEventType, arg.EventType)
+			}
+			if arg.EntityID != payoutID {
+				t.Fatalf("expected outbox entity id %s, got %s", payoutID.String(), arg.EntityID.String())
+			}
+
+			return db.OutboxEvent{}, nil
+		},
 	}
 
 	txCalled := false
@@ -446,6 +480,45 @@ func TestCreatePayoutLoadsExistingPayoutAfterConcurrentIdempotencyInsert(t *test
 	}
 	if payout.ID != existingPayoutID.String() {
 		t.Fatalf("expected existing payout id %s, got %s", existingPayoutID.String(), payout.ID)
+	}
+}
+
+func TestCreatePayoutReturnsOutboxWriteError(t *testing.T) {
+	t.Parallel()
+
+	clientID := mustUUID(t, "2c97a4da-38a7-46a8-9205-6482d0cfc6fb")
+	payoutID := mustUUID(t, "efb98fe4-b75f-4f1d-b9c7-794e66da2abb")
+	fundingSourceID := mustUUID(t, "b76e34c6-d2da-45b1-a0c1-307bc76918bd")
+	now := time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+	expectedErr := errors.New("create outbox event")
+
+	service := NewService(fakePayoutStore{
+		getIdempotency: func(context.Context, db.GetIdempotencyKeyParams) (db.IdempotencyKey, error) {
+			return db.IdempotencyKey{}, pgx.ErrNoRows
+		},
+		getFundingSource: func(context.Context, db.GetFundingSourceByClientIDParams) (db.FundingSource, error) {
+			return db.FundingSource{ID: fundingSourceID, ClientID: clientID}, nil
+		},
+		create: func(context.Context, db.CreatePayoutParams) (db.Payout, error) {
+			return dbPayout(payoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", now), nil
+		},
+		createIdempotency: func(context.Context, db.CreateIdempotencyKeyParams) (db.IdempotencyKey, error) {
+			return db.IdempotencyKey{}, nil
+		},
+		createOutbox: func(context.Context, db.CreateOutboxEventParams) (db.OutboxEvent, error) {
+			return db.OutboxEvent{}, expectedErr
+		},
+	})
+
+	_, err := service.CreatePayout(context.Background(), CreatePayoutInput{
+		ClientID:        clientID.String(),
+		FundingSourceID: fundingSourceID.String(),
+		IdempotencyKey:  "payout-1",
+		Amount:          "125.50",
+		Currency:        "USDC",
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected outbox error %v, got %v", expectedErr, err)
 	}
 }
 
