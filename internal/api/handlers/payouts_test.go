@@ -53,6 +53,9 @@ func TestCreatePayoutCreatesForAuthenticatedClient(t *testing.T) {
 			if input.Currency != "USDC" {
 				t.Fatalf("expected currency USDC, got %s", input.Currency)
 			}
+			if input.IdempotencyKey != "payout-1" {
+				t.Fatalf("expected idempotency key payout-1, got %s", input.IdempotencyKey)
+			}
 
 			return servicePayout("efb98fe4-b75f-4f1d-b9c7-794e66da2abb", input.ClientID, "125.50", "USDC", "pending", now), nil
 		},
@@ -63,6 +66,7 @@ func TestCreatePayoutCreatesForAuthenticatedClient(t *testing.T) {
 		"amount": "125.50",
 		"currency": "USDC"
 	}`))
+	req.Header.Set(idempotencyKeyHeader, "payout-1")
 	req = req.WithContext(apiauth.WithClient(req.Context(), apiauth.Client{
 		ID:   expectedClientID,
 		Name: "acme",
@@ -101,6 +105,7 @@ func TestCreatePayoutMapsFundingSourceNotFound(t *testing.T) {
 		"amount": "125.50",
 		"currency": "USDC"
 	}`))
+	req.Header.Set(idempotencyKeyHeader, "payout-1")
 	req = req.WithContext(apiauth.WithClient(req.Context(), apiauth.Client{
 		ID:   "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
 		Name: "acme",
@@ -111,6 +116,62 @@ func TestCreatePayoutMapsFundingSourceNotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected %d, got %d", http.StatusNotFound, rec.Code)
+	}
+}
+
+func TestCreatePayoutMapsIdempotencyConflict(t *testing.T) {
+	t.Parallel()
+
+	handler := NewPayoutsHandler(fakePayoutReadService{
+		create: func(context.Context, payoutservice.CreatePayoutInput) (payoutservice.Payout, error) {
+			return payoutservice.Payout{}, payoutservice.ErrIdempotencyConflict
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/payouts", strings.NewReader(`{
+		"funding_source_id": "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
+		"amount": "125.50",
+		"currency": "USDC"
+	}`))
+	req.Header.Set(idempotencyKeyHeader, "payout-1")
+	req = req.WithContext(apiauth.WithClient(req.Context(), apiauth.Client{
+		ID:   "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
+		Name: "acme",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.CreatePayout(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected %d, got %d", http.StatusConflict, rec.Code)
+	}
+}
+
+func TestCreatePayoutRejectsMissingIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	handler := NewPayoutsHandler(fakePayoutReadService{
+		create: func(context.Context, payoutservice.CreatePayoutInput) (payoutservice.Payout, error) {
+			t.Fatal("service should not be called without idempotency key")
+			return payoutservice.Payout{}, nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/payouts", strings.NewReader(`{
+		"funding_source_id": "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
+		"amount": "125.50",
+		"currency": "USDC"
+	}`))
+	req = req.WithContext(apiauth.WithClient(req.Context(), apiauth.Client{
+		ID:   "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
+		Name: "acme",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.CreatePayout(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
 	}
 }
 
@@ -125,6 +186,7 @@ func TestCreatePayoutRejectsInvalidJSON(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/payouts", strings.NewReader(`{`))
+	req.Header.Set(idempotencyKeyHeader, "payout-1")
 	req = req.WithContext(apiauth.WithClient(req.Context(), apiauth.Client{
 		ID:   "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
 		Name: "acme",

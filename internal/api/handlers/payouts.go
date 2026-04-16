@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/api/auth"
@@ -14,6 +15,7 @@ import (
 const (
 	defaultPayoutListLimit = int32(50)
 	maxPayoutListLimit     = int32(100)
+	idempotencyKeyHeader   = "Idempotency-Key"
 )
 
 type PayoutReadService interface {
@@ -59,6 +61,12 @@ func (h PayoutsHandler) CreatePayout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	idempotencyKey := strings.TrimSpace(r.Header.Get(idempotencyKeyHeader))
+	if idempotencyKey == "" {
+		http.Error(w, "idempotency key is required", http.StatusBadRequest)
+		return
+	}
+
 	var req createPayoutRequest
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -70,13 +78,16 @@ func (h PayoutsHandler) CreatePayout(w http.ResponseWriter, r *http.Request) {
 	payout, err := h.service.CreatePayout(r.Context(), payoutservice.CreatePayoutInput{
 		ClientID:        client.ID,
 		FundingSourceID: req.FundingSourceID,
+		IdempotencyKey:  idempotencyKey,
 		Amount:          req.Amount,
 		Currency:        req.Currency,
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, payoutservice.ErrInvalidPayout), errors.Is(err, payoutservice.ErrInvalidFundingSourceID):
+		case errors.Is(err, payoutservice.ErrInvalidPayout), errors.Is(err, payoutservice.ErrInvalidFundingSourceID), errors.Is(err, payoutservice.ErrInvalidIdempotencyKey):
 			http.Error(w, "invalid payout", http.StatusBadRequest)
+		case errors.Is(err, payoutservice.ErrIdempotencyConflict):
+			http.Error(w, "idempotency conflict", http.StatusConflict)
 		case errors.Is(err, payoutservice.ErrFundingSourceNotFound):
 			http.Error(w, "funding source not found", http.StatusNotFound)
 		case errors.Is(err, payoutservice.ErrInvalidClientID):

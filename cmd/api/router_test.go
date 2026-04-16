@@ -306,6 +306,9 @@ func TestNewRouterProtectsPayoutCreateRoute(t *testing.T) {
 			if input.Amount != "125.50" {
 				t.Fatalf("expected amount 125.50, got %s", input.Amount)
 			}
+			if input.IdempotencyKey != "payout-1" {
+				t.Fatalf("expected idempotency key payout-1, got %s", input.IdempotencyKey)
+			}
 
 			return payoutservice.Payout{}, nil
 		},
@@ -322,6 +325,7 @@ func TestNewRouterProtectsPayoutCreateRoute(t *testing.T) {
 		"amount": "125.50",
 		"currency": "USDC"
 	}`))
+	req.Header.Set("Idempotency-Key", "payout-1")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)

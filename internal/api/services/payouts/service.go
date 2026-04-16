@@ -2,12 +2,15 @@ package payouts
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"math/big"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
@@ -17,23 +20,34 @@ import (
 var (
 	ErrInvalidClientID        = errors.New("invalid client id")
 	ErrInvalidFundingSourceID = errors.New("invalid funding source id")
+	ErrInvalidIdempotencyKey  = errors.New("invalid idempotency key")
 	ErrInvalidPagination      = errors.New("invalid pagination")
 	ErrInvalidPayout          = errors.New("invalid payout")
 	ErrInvalidPayoutID        = errors.New("invalid payout id")
 	ErrFundingSourceNotFound  = errors.New("funding source not found")
+	ErrIdempotencyConflict    = errors.New("idempotency conflict")
 	ErrPayoutNotFound         = errors.New("payout not found")
 	ErrUnsupportedNumeric     = errors.New("unsupported numeric value")
 )
 
+var errConcurrentIdempotencyKeyInsert = errors.New("concurrent idempotency key insert")
+
 type PayoutStore interface {
+	CreateIdempotencyKey(ctx context.Context, arg db.CreateIdempotencyKeyParams) (db.IdempotencyKey, error)
 	CreatePayout(ctx context.Context, arg db.CreatePayoutParams) (db.Payout, error)
 	GetFundingSourceByClientID(ctx context.Context, arg db.GetFundingSourceByClientIDParams) (db.FundingSource, error)
+	GetIdempotencyKey(ctx context.Context, arg db.GetIdempotencyKeyParams) (db.IdempotencyKey, error)
 	GetPayoutByClientID(ctx context.Context, arg db.GetPayoutByClientIDParams) (db.Payout, error)
 	ListPayoutsByClientID(ctx context.Context, arg db.ListPayoutsByClientIDParams) ([]db.Payout, error)
 }
 
+type TxRunner interface {
+	WithinTx(ctx context.Context, fn func(store PayoutStore) error) error
+}
+
 type Service struct {
-	store PayoutStore
+	store    PayoutStore
+	txRunner TxRunner
 }
 
 type GetPayoutInput struct {
@@ -50,6 +64,7 @@ type ListPayoutsInput struct {
 type CreatePayoutInput struct {
 	ClientID        string
 	FundingSourceID string
+	IdempotencyKey  string
 	Amount          string
 	Currency        string
 }
@@ -66,11 +81,21 @@ type Payout struct {
 }
 
 func NewService(store PayoutStore) *Service {
-	return &Service{store: store}
+	return &Service{
+		store:    store,
+		txRunner: passthroughTxRunner{store: store},
+	}
+}
+
+func NewServiceWithTx(store PayoutStore, txRunner TxRunner) *Service {
+	return &Service{
+		store:    store,
+		txRunner: txRunner,
+	}
 }
 
 func (s *Service) CreatePayout(ctx context.Context, input CreatePayoutInput) (Payout, error) {
-	if s == nil || s.store == nil {
+	if s == nil || s.store == nil || s.txRunner == nil {
 		return Payout{}, errors.New("payout service is not configured")
 	}
 
@@ -94,23 +119,69 @@ func (s *Service) CreatePayout(ctx context.Context, input CreatePayoutInput) (Pa
 		return Payout{}, ErrInvalidPayout
 	}
 
-	if _, err := s.store.GetFundingSourceByClientID(ctx, db.GetFundingSourceByClientIDParams{
-		ClientID: clientID,
-		ID:       fundingSourceID,
-	}); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Payout{}, ErrFundingSourceNotFound
-		}
-
-		return Payout{}, err
+	idempotencyKey := strings.TrimSpace(input.IdempotencyKey)
+	if idempotencyKey == "" {
+		return Payout{}, ErrInvalidIdempotencyKey
 	}
 
-	payout, err := s.store.CreatePayout(ctx, db.CreatePayoutParams{
-		ClientID:        clientID,
-		FundingSourceID: fundingSourceID,
-		Amount:          amount,
-		Currency:        currency,
+	amountHashValue, err := numericString(amount)
+	if err != nil {
+		return Payout{}, err
+	}
+	requestHash := createPayoutRequestHash(clientID.String(), fundingSourceID.String(), amountHashValue, currency)
+
+	var payout db.Payout
+
+	err = s.txRunner.WithinTx(ctx, func(store PayoutStore) error {
+		existing, found, err := loadIdempotentPayout(ctx, store, clientID, idempotencyKey, requestHash)
+		if err != nil {
+			return err
+		}
+		if found {
+			payout = existing
+			return nil
+		}
+
+		if _, err := store.GetFundingSourceByClientID(ctx, db.GetFundingSourceByClientIDParams{
+			ClientID: clientID,
+			ID:       fundingSourceID,
+		}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrFundingSourceNotFound
+			}
+
+			return err
+		}
+
+		created, err := store.CreatePayout(ctx, db.CreatePayoutParams{
+			ClientID:        clientID,
+			FundingSourceID: fundingSourceID,
+			Amount:          amount,
+			Currency:        currency,
+		})
+		if err != nil {
+			return err
+		}
+
+		if _, err := store.CreateIdempotencyKey(ctx, db.CreateIdempotencyKeyParams{
+			Key:         idempotencyKey,
+			ClientID:    clientID,
+			RequestHash: requestHash,
+			PayoutID:    created.ID,
+		}); err != nil {
+			if isUniqueViolation(err) {
+				return errConcurrentIdempotencyKeyInsert
+			}
+
+			return err
+		}
+
+		payout = created
+		return nil
 	})
+	if errors.Is(err, errConcurrentIdempotencyKeyInsert) {
+		payout, _, err = loadIdempotentPayout(ctx, s.store, clientID, idempotencyKey, requestHash)
+	}
 	if err != nil {
 		return Payout{}, err
 	}
@@ -237,4 +308,45 @@ func numericString(value pgtype.Numeric) (string, error) {
 
 	point := len(digits) - scale
 	return sign + digits[:point] + "." + digits[point:], nil
+}
+
+func createPayoutRequestHash(clientID, fundingSourceID, amount, currency string) string {
+	hash := sha256.New()
+	for _, part := range []string{clientID, fundingSourceID, amount, currency} {
+		_, _ = hash.Write([]byte(part))
+		_, _ = hash.Write([]byte{0})
+	}
+
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func loadIdempotentPayout(ctx context.Context, store PayoutStore, clientID pgtype.UUID, idempotencyKey, requestHash string) (db.Payout, bool, error) {
+	existingKey, err := store.GetIdempotencyKey(ctx, db.GetIdempotencyKeyParams{
+		ClientID: clientID,
+		Key:      idempotencyKey,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.Payout{}, false, nil
+	}
+	if err != nil {
+		return db.Payout{}, false, err
+	}
+	if existingKey.RequestHash != requestHash {
+		return db.Payout{}, false, ErrIdempotencyConflict
+	}
+
+	payout, err := store.GetPayoutByClientID(ctx, db.GetPayoutByClientIDParams{
+		ClientID: clientID,
+		ID:       existingKey.PayoutID,
+	})
+	if err != nil {
+		return db.Payout{}, false, err
+	}
+
+	return payout, true, nil
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

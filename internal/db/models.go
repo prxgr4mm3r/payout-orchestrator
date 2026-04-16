@@ -32,7 +32,7 @@ type IdempotencyKey struct {
 	ClientID    pgtype.UUID
 	RequestHash string
 	PayoutID    pgtype.UUID
-	CreatedAt   pgtype.Timestamp
+	CreatedAt   pgtype.Timestamptz
 }
 
 type OutboxEvent struct {
