@@ -32,25 +32,6 @@ func TestExecutePayoutReturnsSuccessByDefault(t *testing.T) {
 	}
 }
 
-func TestExecutePayoutReturnsFailureForFailPrefixedAccount(t *testing.T) {
-	t.Parallel()
-
-	simulator := New(Config{})
-
-	result, err := simulator.ExecutePayout(context.Background(), provider.ExecutePayoutInput{
-		PaymentAccountID: "fail-account",
-	})
-	if err != nil {
-		t.Fatalf("execute payout: %v", err)
-	}
-	if result.Status != payoutdomain.StatusFailed {
-		t.Fatalf("expected status %s, got %s", payoutdomain.StatusFailed, result.Status)
-	}
-	if result.FailureReason != "provider simulator rejected payout" {
-		t.Fatalf("expected default failure reason, got %q", result.FailureReason)
-	}
-}
-
 func TestExecutePayoutUsesConfiguredFailure(t *testing.T) {
 	t.Parallel()
 
@@ -81,7 +62,7 @@ func TestExecutePayoutUsesConfiguredSuccess(t *testing.T) {
 	})
 
 	result, err := simulator.ExecutePayout(context.Background(), provider.ExecutePayoutInput{
-		PaymentAccountID: "fail-account",
+		PaymentAccountID: "acct-1",
 	})
 	if err != nil {
 		t.Fatalf("execute payout: %v", err)

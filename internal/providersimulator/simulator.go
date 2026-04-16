@@ -36,7 +36,7 @@ func (s *Simulator) ExecutePayout(ctx context.Context, input provider.ExecutePay
 		return provider.ExecutePayoutResult{}, err
 	}
 
-	result, err := s.resultFor(input)
+	result, err := s.result()
 	if err != nil {
 		return provider.ExecutePayoutResult{}, err
 	}
@@ -48,10 +48,10 @@ func (s *Simulator) ExecutePayout(ctx context.Context, input provider.ExecutePay
 	return result, nil
 }
 
-func (s *Simulator) resultFor(input provider.ExecutePayoutInput) (provider.ExecutePayoutResult, error) {
+func (s *Simulator) result() (provider.ExecutePayoutResult, error) {
 	outcome := s.config.Outcome
 	if outcome == "" {
-		outcome = outcomeFromInput(input)
+		outcome = OutcomeSucceeded
 	}
 
 	switch outcome {
@@ -72,13 +72,4 @@ func (s *Simulator) resultFor(input provider.ExecutePayoutInput) (provider.Execu
 	default:
 		return provider.ExecutePayoutResult{}, ErrInvalidOutcome
 	}
-}
-
-func outcomeFromInput(input provider.ExecutePayoutInput) Outcome {
-	accountID := strings.ToLower(strings.TrimSpace(input.PaymentAccountID))
-	if strings.HasPrefix(accountID, "fail") {
-		return OutcomeFailed
-	}
-
-	return OutcomeSucceeded
 }
