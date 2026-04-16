@@ -1,6 +1,6 @@
 -- name: CreateOutboxEvent :one
-INSERT INTO outbox_events (id, event_type, payload, created_at)
-VALUES ($1, $2, $3, NOW())
+INSERT INTO outbox_events (event_type, entity_id, payload)
+VALUES ($1, $2, $3)
 RETURNING *;
 
 -- name: GetPendingOutboxEvents :many

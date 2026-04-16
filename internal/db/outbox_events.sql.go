@@ -12,19 +12,19 @@ import (
 )
 
 const createOutboxEvent = `-- name: CreateOutboxEvent :one
-INSERT INTO outbox_events (id, event_type, payload, created_at)
-VALUES ($1, $2, $3, NOW())
-RETURNING id, event_type, payload, status, created_at, processed_at
+INSERT INTO outbox_events (event_type, entity_id, payload)
+VALUES ($1, $2, $3)
+RETURNING id, event_type, payload, status, created_at, processed_at, entity_id
 `
 
 type CreateOutboxEventParams struct {
-	ID        pgtype.UUID
 	EventType string
+	EntityID  pgtype.UUID
 	Payload   []byte
 }
 
 func (q *Queries) CreateOutboxEvent(ctx context.Context, arg CreateOutboxEventParams) (OutboxEvent, error) {
-	row := q.db.QueryRow(ctx, createOutboxEvent, arg.ID, arg.EventType, arg.Payload)
+	row := q.db.QueryRow(ctx, createOutboxEvent, arg.EventType, arg.EntityID, arg.Payload)
 	var i OutboxEvent
 	err := row.Scan(
 		&i.ID,
@@ -33,12 +33,13 @@ func (q *Queries) CreateOutboxEvent(ctx context.Context, arg CreateOutboxEventPa
 		&i.Status,
 		&i.CreatedAt,
 		&i.ProcessedAt,
+		&i.EntityID,
 	)
 	return i, err
 }
 
 const getPendingOutboxEvents = `-- name: GetPendingOutboxEvents :many
-SELECT id, event_type, payload, status, created_at, processed_at FROM outbox_events WHERE status = 'pending' ORDER BY created_at ASC
+SELECT id, event_type, payload, status, created_at, processed_at, entity_id FROM outbox_events WHERE status = 'pending' ORDER BY created_at ASC
 `
 
 func (q *Queries) GetPendingOutboxEvents(ctx context.Context) ([]OutboxEvent, error) {
@@ -57,6 +58,7 @@ func (q *Queries) GetPendingOutboxEvents(ctx context.Context) ([]OutboxEvent, er
 			&i.Status,
 			&i.CreatedAt,
 			&i.ProcessedAt,
+			&i.EntityID,
 		); err != nil {
 			return nil, err
 		}
@@ -69,7 +71,7 @@ func (q *Queries) GetPendingOutboxEvents(ctx context.Context) ([]OutboxEvent, er
 }
 
 const markOutboxEventAsProcessed = `-- name: MarkOutboxEventAsProcessed :one
-UPDATE outbox_events SET status = 'processed', processed_at = NOW() WHERE id = $1 RETURNING id, event_type, payload, status, created_at, processed_at
+UPDATE outbox_events SET status = 'processed', processed_at = NOW() WHERE id = $1 RETURNING id, event_type, payload, status, created_at, processed_at, entity_id
 `
 
 func (q *Queries) MarkOutboxEventAsProcessed(ctx context.Context, id pgtype.UUID) (OutboxEvent, error) {
@@ -82,6 +84,7 @@ func (q *Queries) MarkOutboxEventAsProcessed(ctx context.Context, id pgtype.UUID
 		&i.Status,
 		&i.CreatedAt,
 		&i.ProcessedAt,
+		&i.EntityID,
 	)
 	return i, err
 }
