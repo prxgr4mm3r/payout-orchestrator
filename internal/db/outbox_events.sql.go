@@ -11,10 +11,44 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimNextPendingOutboxEvent = `-- name: ClaimNextPendingOutboxEvent :one
+WITH next_event AS (
+    SELECT id
+    FROM outbox_events
+    WHERE status = 'pending'
+       OR (status = 'processing' AND outbox_events.claimed_at < $1)
+    ORDER BY created_at ASC
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE outbox_events AS events
+SET status = 'processing',
+    claimed_at = NOW()
+FROM next_event
+WHERE events.id = next_event.id
+RETURNING events.id, events.event_type, events.payload, events.status, events.created_at, events.processed_at, events.entity_id, events.claimed_at
+`
+
+func (q *Queries) ClaimNextPendingOutboxEvent(ctx context.Context, reclaimBefore pgtype.Timestamptz) (OutboxEvent, error) {
+	row := q.db.QueryRow(ctx, claimNextPendingOutboxEvent, reclaimBefore)
+	var i OutboxEvent
+	err := row.Scan(
+		&i.ID,
+		&i.EventType,
+		&i.Payload,
+		&i.Status,
+		&i.CreatedAt,
+		&i.ProcessedAt,
+		&i.EntityID,
+		&i.ClaimedAt,
+	)
+	return i, err
+}
+
 const createOutboxEvent = `-- name: CreateOutboxEvent :one
 INSERT INTO outbox_events (event_type, entity_id, payload)
 VALUES ($1, $2, $3)
-RETURNING id, event_type, payload, status, created_at, processed_at, entity_id
+RETURNING id, event_type, payload, status, created_at, processed_at, entity_id, claimed_at
 `
 
 type CreateOutboxEventParams struct {
@@ -34,12 +68,13 @@ func (q *Queries) CreateOutboxEvent(ctx context.Context, arg CreateOutboxEventPa
 		&i.CreatedAt,
 		&i.ProcessedAt,
 		&i.EntityID,
+		&i.ClaimedAt,
 	)
 	return i, err
 }
 
 const getPendingOutboxEvents = `-- name: GetPendingOutboxEvents :many
-SELECT id, event_type, payload, status, created_at, processed_at, entity_id FROM outbox_events WHERE status = 'pending' ORDER BY created_at ASC
+SELECT id, event_type, payload, status, created_at, processed_at, entity_id, claimed_at FROM outbox_events WHERE status = 'pending' ORDER BY created_at ASC
 `
 
 func (q *Queries) GetPendingOutboxEvents(ctx context.Context) ([]OutboxEvent, error) {
@@ -59,6 +94,7 @@ func (q *Queries) GetPendingOutboxEvents(ctx context.Context) ([]OutboxEvent, er
 			&i.CreatedAt,
 			&i.ProcessedAt,
 			&i.EntityID,
+			&i.ClaimedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -71,7 +107,12 @@ func (q *Queries) GetPendingOutboxEvents(ctx context.Context) ([]OutboxEvent, er
 }
 
 const markOutboxEventAsProcessed = `-- name: MarkOutboxEventAsProcessed :one
-UPDATE outbox_events SET status = 'processed', processed_at = NOW() WHERE id = $1 RETURNING id, event_type, payload, status, created_at, processed_at, entity_id
+UPDATE outbox_events
+SET status = 'processed',
+    processed_at = NOW(),
+    claimed_at = NULL
+WHERE id = $1
+RETURNING id, event_type, payload, status, created_at, processed_at, entity_id, claimed_at
 `
 
 func (q *Queries) MarkOutboxEventAsProcessed(ctx context.Context, id pgtype.UUID) (OutboxEvent, error) {
@@ -85,6 +126,31 @@ func (q *Queries) MarkOutboxEventAsProcessed(ctx context.Context, id pgtype.UUID
 		&i.CreatedAt,
 		&i.ProcessedAt,
 		&i.EntityID,
+		&i.ClaimedAt,
+	)
+	return i, err
+}
+
+const releaseOutboxEventClaim = `-- name: ReleaseOutboxEventClaim :one
+UPDATE outbox_events
+SET status = 'pending',
+    claimed_at = NULL
+WHERE id = $1
+RETURNING id, event_type, payload, status, created_at, processed_at, entity_id, claimed_at
+`
+
+func (q *Queries) ReleaseOutboxEventClaim(ctx context.Context, id pgtype.UUID) (OutboxEvent, error) {
+	row := q.db.QueryRow(ctx, releaseOutboxEventClaim, id)
+	var i OutboxEvent
+	err := row.Scan(
+		&i.ID,
+		&i.EventType,
+		&i.Payload,
+		&i.Status,
+		&i.CreatedAt,
+		&i.ProcessedAt,
+		&i.EntityID,
+		&i.ClaimedAt,
 	)
 	return i, err
 }

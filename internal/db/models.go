@@ -43,6 +43,7 @@ type OutboxEvent struct {
 	CreatedAt   pgtype.Timestamptz
 	ProcessedAt pgtype.Timestamptz
 	EntityID    pgtype.UUID
+	ClaimedAt   pgtype.Timestamptz
 }
 
 type Payout struct {
