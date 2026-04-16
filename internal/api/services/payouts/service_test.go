@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
@@ -21,6 +22,14 @@ type fakePayoutStore struct {
 	getFundingSource  func(ctx context.Context, arg db.GetFundingSourceByClientIDParams) (db.FundingSource, error)
 	getIdempotency    func(ctx context.Context, arg db.GetIdempotencyKeyParams) (db.IdempotencyKey, error)
 	list              func(ctx context.Context, arg db.ListPayoutsByClientIDParams) ([]db.Payout, error)
+}
+
+type fakeTxRunner struct {
+	run func(ctx context.Context, fn func(store PayoutStore) error) error
+}
+
+func (f fakeTxRunner) WithinTx(ctx context.Context, fn func(store PayoutStore) error) error {
+	return f.run(ctx, fn)
 }
 
 func (f fakePayoutStore) CreateIdempotencyKey(ctx context.Context, arg db.CreateIdempotencyKeyParams) (db.IdempotencyKey, error) {
@@ -315,6 +324,128 @@ func TestCreatePayoutRejectsMissingIdempotencyKey(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidIdempotencyKey) {
 		t.Fatalf("expected ErrInvalidIdempotencyKey, got %v", err)
+	}
+}
+
+func TestCreatePayoutUsesTransactionalStore(t *testing.T) {
+	t.Parallel()
+
+	clientID := mustUUID(t, "2c97a4da-38a7-46a8-9205-6482d0cfc6fb")
+	payoutID := mustUUID(t, "efb98fe4-b75f-4f1d-b9c7-794e66da2abb")
+	fundingSourceID := mustUUID(t, "b76e34c6-d2da-45b1-a0c1-307bc76918bd")
+	now := time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+
+	baseStore := fakePayoutStore{
+		getIdempotency: func(context.Context, db.GetIdempotencyKeyParams) (db.IdempotencyKey, error) {
+			t.Fatal("base store should not be used inside transaction")
+			return db.IdempotencyKey{}, nil
+		},
+	}
+	txStore := fakePayoutStore{
+		getIdempotency: func(context.Context, db.GetIdempotencyKeyParams) (db.IdempotencyKey, error) {
+			return db.IdempotencyKey{}, pgx.ErrNoRows
+		},
+		getFundingSource: func(_ context.Context, arg db.GetFundingSourceByClientIDParams) (db.FundingSource, error) {
+			if arg.ClientID != clientID || arg.ID != fundingSourceID {
+				t.Fatal("transaction store got unexpected funding source lookup")
+			}
+
+			return db.FundingSource{ID: fundingSourceID, ClientID: clientID}, nil
+		},
+		create: func(context.Context, db.CreatePayoutParams) (db.Payout, error) {
+			return dbPayout(payoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", now), nil
+		},
+		createIdempotency: func(context.Context, db.CreateIdempotencyKeyParams) (db.IdempotencyKey, error) {
+			return db.IdempotencyKey{}, nil
+		},
+	}
+
+	txCalled := false
+	service := NewServiceWithTx(baseStore, fakeTxRunner{
+		run: func(ctx context.Context, fn func(store PayoutStore) error) error {
+			txCalled = true
+			return fn(txStore)
+		},
+	})
+
+	payout, err := service.CreatePayout(context.Background(), CreatePayoutInput{
+		ClientID:        clientID.String(),
+		FundingSourceID: fundingSourceID.String(),
+		IdempotencyKey:  "payout-1",
+		Amount:          "125.50",
+		Currency:        "USDC",
+	})
+	if err != nil {
+		t.Fatalf("create payout: %v", err)
+	}
+	if !txCalled {
+		t.Fatal("expected create payout to run inside transaction")
+	}
+	if payout.ID != payoutID.String() {
+		t.Fatalf("expected payout id %s, got %s", payoutID.String(), payout.ID)
+	}
+}
+
+func TestCreatePayoutLoadsExistingPayoutAfterConcurrentIdempotencyInsert(t *testing.T) {
+	t.Parallel()
+
+	clientID := mustUUID(t, "2c97a4da-38a7-46a8-9205-6482d0cfc6fb")
+	existingPayoutID := mustUUID(t, "efb98fe4-b75f-4f1d-b9c7-794e66da2abb")
+	transientPayoutID := mustUUID(t, "5bc7aaf3-bb45-46ea-887f-e81b690e6730")
+	fundingSourceID := mustUUID(t, "b76e34c6-d2da-45b1-a0c1-307bc76918bd")
+	now := time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+	requestHash := createPayoutRequestHash(clientID.String(), fundingSourceID.String(), "125.50", "USDC")
+
+	baseStore := fakePayoutStore{
+		getIdempotency: func(context.Context, db.GetIdempotencyKeyParams) (db.IdempotencyKey, error) {
+			return db.IdempotencyKey{
+				Key:         "payout-1",
+				ClientID:    clientID,
+				RequestHash: requestHash,
+				PayoutID:    existingPayoutID,
+			}, nil
+		},
+		get: func(_ context.Context, arg db.GetPayoutByClientIDParams) (db.Payout, error) {
+			if arg.ID != existingPayoutID {
+				t.Fatalf("expected existing payout id %s, got %s", existingPayoutID.String(), arg.ID.String())
+			}
+
+			return dbPayout(existingPayoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", now), nil
+		},
+	}
+	txStore := fakePayoutStore{
+		getIdempotency: func(context.Context, db.GetIdempotencyKeyParams) (db.IdempotencyKey, error) {
+			return db.IdempotencyKey{}, pgx.ErrNoRows
+		},
+		getFundingSource: func(context.Context, db.GetFundingSourceByClientIDParams) (db.FundingSource, error) {
+			return db.FundingSource{ID: fundingSourceID, ClientID: clientID}, nil
+		},
+		create: func(context.Context, db.CreatePayoutParams) (db.Payout, error) {
+			return dbPayout(transientPayoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", now), nil
+		},
+		createIdempotency: func(context.Context, db.CreateIdempotencyKeyParams) (db.IdempotencyKey, error) {
+			return db.IdempotencyKey{}, &pgconn.PgError{Code: "23505"}
+		},
+	}
+
+	service := NewServiceWithTx(baseStore, fakeTxRunner{
+		run: func(ctx context.Context, fn func(store PayoutStore) error) error {
+			return fn(txStore)
+		},
+	})
+
+	payout, err := service.CreatePayout(context.Background(), CreatePayoutInput{
+		ClientID:        clientID.String(),
+		FundingSourceID: fundingSourceID.String(),
+		IdempotencyKey:  "payout-1",
+		Amount:          "125.50",
+		Currency:        "USDC",
+	})
+	if err != nil {
+		t.Fatalf("create payout: %v", err)
+	}
+	if payout.ID != existingPayoutID.String() {
+		t.Fatalf("expected existing payout id %s, got %s", existingPayoutID.String(), payout.ID)
 	}
 }
 

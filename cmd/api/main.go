@@ -35,7 +35,7 @@ func main() {
 	queries := db.New(dbPool)
 	authSvc := authservice.NewService(queries)
 	fundingSourcesSvc := fundingservice.NewService(queries)
-	payoutsSvc := payoutservice.NewService(queries)
+	payoutsSvc := payoutservice.NewServiceWithTx(queries, payoutservice.NewDBTxRunner(dbPool, queries))
 	clientsHandler := &handlers.ClientsHandler{}
 	fundingSourcesHandler := handlers.NewFundingSourcesHandler(fundingSourcesSvc)
 	payoutsHandler := handlers.NewPayoutsHandler(payoutsSvc)
