@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"math/big"
 	"strings"
 
@@ -32,10 +33,18 @@ type payoutCreatedOutboxPayload struct {
 
 type ExecutionHandler struct {
 	provider provider.PayoutProvider
+	logger   *log.Logger
 }
 
-func NewExecutionHandler(provider provider.PayoutProvider) *ExecutionHandler {
-	return &ExecutionHandler{provider: provider}
+func NewExecutionHandler(provider provider.PayoutProvider, logger *log.Logger) *ExecutionHandler {
+	if logger == nil {
+		logger = log.Default()
+	}
+
+	return &ExecutionHandler{
+		provider: provider,
+		logger:   logger,
+	}
 }
 
 func (h *ExecutionHandler) HandleOutboxEvent(ctx context.Context, store Store, event db.OutboxEvent) error {
@@ -98,19 +107,53 @@ func (h *ExecutionHandler) HandleOutboxEvent(ctx context.Context, store Store, e
 	if err != nil {
 		return err
 	}
-	if result.Status != payoutdomain.StatusSucceeded {
+
+	switch result.Status {
+	case payoutdomain.StatusSucceeded:
+		if _, err := store.UpdatePayoutStatus(ctx, db.UpdatePayoutStatusParams{
+			ID:     payoutRecord.ID,
+			Status: string(payoutdomain.StatusSucceeded),
+		}); err != nil {
+			return err
+		}
+
+		if _, err := store.MarkOutboxEventAsProcessed(ctx, event.ID); err != nil {
+			return err
+		}
+
+		h.logger.Printf(
+			"payout execution succeeded payout_id=%s outbox_event_id=%s funding_source_id=%s",
+			payoutRecord.ID.String(),
+			event.ID.String(),
+			fundingSource.ID.String(),
+		)
+		return nil
+	case payoutdomain.StatusFailed:
+		if _, err := store.UpdatePayoutFailure(ctx, db.UpdatePayoutFailureParams{
+			ID: payoutRecord.ID,
+			FailureReason: pgtype.Text{
+				String: result.FailureReason,
+				Valid:  strings.TrimSpace(result.FailureReason) != "",
+			},
+		}); err != nil {
+			return err
+		}
+
+		if _, err := store.MarkOutboxEventAsProcessed(ctx, event.ID); err != nil {
+			return err
+		}
+
+		h.logger.Printf(
+			"payout execution failed payout_id=%s outbox_event_id=%s funding_source_id=%s failure_reason=%q",
+			payoutRecord.ID.String(),
+			event.ID.String(),
+			fundingSource.ID.String(),
+			result.FailureReason,
+		)
+		return nil
+	default:
 		return ErrUnsupportedProviderResult
 	}
-
-	if _, err := store.UpdatePayoutStatus(ctx, db.UpdatePayoutStatusParams{
-		ID:     payoutRecord.ID,
-		Status: string(payoutdomain.StatusSucceeded),
-	}); err != nil {
-		return err
-	}
-
-	_, err = store.MarkOutboxEventAsProcessed(ctx, event.ID)
-	return err
 }
 
 type parsedPayoutCreatedOutboxPayload struct {
