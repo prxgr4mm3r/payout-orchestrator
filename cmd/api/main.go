@@ -19,6 +19,7 @@ import (
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/platform/postgres"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/processor"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/providersimulator"
 )
 
 func main() {
@@ -56,9 +57,7 @@ func main() {
 	payoutsHandler := handlers.NewPayoutsHandler(payoutsSvc)
 	payoutProcessor := processor.New(
 		processor.NewDBTxRunner(dbPool, queries),
-		processor.HandlerFunc(func(context.Context, db.OutboxEvent) error {
-			return processor.ErrSkipClaim
-		}),
+		processor.NewExecutionHandler(providersimulator.New(providersimulator.Config{})),
 		log.Default(),
 		processor.Config{
 			PollInterval: pollInterval,
