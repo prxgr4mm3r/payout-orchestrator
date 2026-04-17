@@ -16,7 +16,11 @@ var ErrSkipClaim = errors.New("skip outbox claim")
 
 type Store interface {
 	ClaimNextPendingOutboxEvent(ctx context.Context, reclaimBefore pgtype.Timestamptz) (db.OutboxEvent, error)
+	GetFundingSourceByClientID(ctx context.Context, arg db.GetFundingSourceByClientIDParams) (db.FundingSource, error)
+	GetPayoutByClientID(ctx context.Context, arg db.GetPayoutByClientIDParams) (db.Payout, error)
+	MarkOutboxEventAsProcessed(ctx context.Context, id pgtype.UUID) (db.OutboxEvent, error)
 	ReleaseOutboxEventClaim(ctx context.Context, id pgtype.UUID) (db.OutboxEvent, error)
+	UpdatePayoutStatus(ctx context.Context, arg db.UpdatePayoutStatusParams) (db.Payout, error)
 }
 
 type TxRunner interface {
@@ -24,13 +28,13 @@ type TxRunner interface {
 }
 
 type Handler interface {
-	HandleOutboxEvent(ctx context.Context, event db.OutboxEvent) error
+	HandleOutboxEvent(ctx context.Context, store Store, event db.OutboxEvent) error
 }
 
-type HandlerFunc func(ctx context.Context, event db.OutboxEvent) error
+type HandlerFunc func(ctx context.Context, store Store, event db.OutboxEvent) error
 
-func (f HandlerFunc) HandleOutboxEvent(ctx context.Context, event db.OutboxEvent) error {
-	return f(ctx, event)
+func (f HandlerFunc) HandleOutboxEvent(ctx context.Context, store Store, event db.OutboxEvent) error {
+	return f(ctx, store, event)
 }
 
 type Config struct {
@@ -112,7 +116,7 @@ func (p *Processor) RunOnce(ctx context.Context) (bool, error) {
 
 		claimed = true
 
-		if err := p.handler.HandleOutboxEvent(ctx, event); err != nil {
+		if err := p.handler.HandleOutboxEvent(ctx, store, event); err != nil {
 			if _, releaseErr := store.ReleaseOutboxEventClaim(ctx, event.ID); releaseErr != nil {
 				return releaseErr
 			}
