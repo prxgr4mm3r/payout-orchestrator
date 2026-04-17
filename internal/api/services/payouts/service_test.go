@@ -104,7 +104,7 @@ func TestCreatePayoutValidatesFundingSourceOwnership(t *testing.T) {
 				t.Fatalf("expected currency USDC, got %s", arg.Currency)
 			}
 
-			return dbPayout(payoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", now), nil
+			return dbPayout(payoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", "", now), nil
 		},
 		createIdempotency: func(_ context.Context, arg db.CreateIdempotencyKeyParams) (db.IdempotencyKey, error) {
 			if arg.ClientID != clientID {
@@ -246,7 +246,7 @@ func TestCreatePayoutReturnsExistingPayoutForDuplicateRequest(t *testing.T) {
 				t.Fatalf("expected payout id %s, got %s", payoutID.String(), arg.ID.String())
 			}
 
-			return dbPayout(payoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", now), nil
+			return dbPayout(payoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", "", now), nil
 		},
 		getFundingSource: func(context.Context, db.GetFundingSourceByClientIDParams) (db.FundingSource, error) {
 			t.Fatal("store should not validate funding source for duplicate request")
@@ -377,7 +377,7 @@ func TestCreatePayoutUsesTransactionalStore(t *testing.T) {
 			return db.FundingSource{ID: fundingSourceID, ClientID: clientID}, nil
 		},
 		create: func(context.Context, db.CreatePayoutParams) (db.Payout, error) {
-			return dbPayout(payoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", now), nil
+			return dbPayout(payoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", "", now), nil
 		},
 		createIdempotency: func(context.Context, db.CreateIdempotencyKeyParams) (db.IdempotencyKey, error) {
 			return db.IdempotencyKey{}, nil
@@ -444,7 +444,7 @@ func TestCreatePayoutLoadsExistingPayoutAfterConcurrentIdempotencyInsert(t *test
 				t.Fatalf("expected existing payout id %s, got %s", existingPayoutID.String(), arg.ID.String())
 			}
 
-			return dbPayout(existingPayoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", now), nil
+			return dbPayout(existingPayoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", "", now), nil
 		},
 	}
 	txStore := fakePayoutStore{
@@ -455,7 +455,7 @@ func TestCreatePayoutLoadsExistingPayoutAfterConcurrentIdempotencyInsert(t *test
 			return db.FundingSource{ID: fundingSourceID, ClientID: clientID}, nil
 		},
 		create: func(context.Context, db.CreatePayoutParams) (db.Payout, error) {
-			return dbPayout(transientPayoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", now), nil
+			return dbPayout(transientPayoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", "", now), nil
 		},
 		createIdempotency: func(context.Context, db.CreateIdempotencyKeyParams) (db.IdempotencyKey, error) {
 			return db.IdempotencyKey{}, &pgconn.PgError{Code: "23505"}
@@ -500,7 +500,7 @@ func TestCreatePayoutReturnsOutboxWriteError(t *testing.T) {
 			return db.FundingSource{ID: fundingSourceID, ClientID: clientID}, nil
 		},
 		create: func(context.Context, db.CreatePayoutParams) (db.Payout, error) {
-			return dbPayout(payoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", now), nil
+			return dbPayout(payoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", "", now), nil
 		},
 		createIdempotency: func(context.Context, db.CreateIdempotencyKeyParams) (db.IdempotencyKey, error) {
 			return db.IdempotencyKey{}, nil
@@ -539,7 +539,7 @@ func TestGetPayoutLoadsClientScopedPayout(t *testing.T) {
 				t.Fatalf("expected payout id %s, got %s", payoutID.String(), arg.ID.String())
 			}
 
-			return dbPayout(payoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", now), nil
+			return dbPayout(payoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", "", now), nil
 		},
 	})
 
@@ -627,8 +627,8 @@ func TestListPayoutsLoadsClientScopedPayouts(t *testing.T) {
 			}
 
 			return []db.Payout{
-				dbPayout(firstPayoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", now),
-				dbPayout(secondPayoutID, clientID, fundingSourceID, "99.99", "USD", "processing", now),
+				dbPayout(firstPayoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", "", now),
+				dbPayout(secondPayoutID, clientID, fundingSourceID, "99.99", "USD", "processing", "", now),
 			}, nil
 		},
 	})
@@ -670,6 +670,32 @@ func TestListPayoutsRejectsInvalidPagination(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidPagination) {
 		t.Fatalf("expected ErrInvalidPagination, got %v", err)
+	}
+}
+
+func TestGetPayoutReturnsFailureReason(t *testing.T) {
+	t.Parallel()
+
+	clientID := mustUUID(t, "2c97a4da-38a7-46a8-9205-6482d0cfc6fb")
+	payoutID := mustUUID(t, "efb98fe4-b75f-4f1d-b9c7-794e66da2abb")
+	fundingSourceID := mustUUID(t, "b76e34c6-d2da-45b1-a0c1-307bc76918bd")
+	now := time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC)
+
+	service := NewService(fakePayoutStore{
+		get: func(_ context.Context, arg db.GetPayoutByClientIDParams) (db.Payout, error) {
+			return dbPayout(payoutID, clientID, fundingSourceID, "125.50", "USDC", "failed", "provider rejected payout", now), nil
+		},
+	})
+
+	payout, err := service.GetPayout(context.Background(), GetPayoutInput{
+		ClientID: clientID.String(),
+		ID:       payoutID.String(),
+	})
+	if err != nil {
+		t.Fatalf("get payout: %v", err)
+	}
+	if payout.FailureReason != "provider rejected payout" {
+		t.Fatalf("expected failure reason to be returned, got %q", payout.FailureReason)
 	}
 }
 
@@ -715,7 +741,7 @@ func mustUUID(t *testing.T, raw string) pgtype.UUID {
 	return id
 }
 
-func dbPayout(id, clientID, fundingSourceID pgtype.UUID, amount, currency, status string, at time.Time) db.Payout {
+func dbPayout(id, clientID, fundingSourceID pgtype.UUID, amount, currency, status, failureReason string, at time.Time) db.Payout {
 	return db.Payout{
 		ID:              id,
 		ClientID:        clientID,
@@ -723,6 +749,7 @@ func dbPayout(id, clientID, fundingSourceID pgtype.UUID, amount, currency, statu
 		Amount:          numericFromDecimal(amount),
 		Currency:        currency,
 		Status:          status,
+		FailureReason:   pgtype.Text{String: failureReason, Valid: failureReason != ""},
 		CreatedAt:       pgtype.Timestamptz{Time: at, Valid: true},
 		UpdatedAt:       pgtype.Timestamptz{Time: at, Valid: true},
 	}
