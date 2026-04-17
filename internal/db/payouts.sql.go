@@ -14,7 +14,7 @@ import (
 const createPayout = `-- name: CreatePayout :one
 INSERT INTO payouts (client_id, funding_source_id, amount, currency)
 VALUES ($1, $2, $3, $4)
-RETURNING id, client_id, funding_source_id, amount, currency, status, created_at, updated_at
+RETURNING id, client_id, funding_source_id, amount, currency, status, created_at, updated_at, failure_reason
 `
 
 type CreatePayoutParams struct {
@@ -41,12 +41,13 @@ func (q *Queries) CreatePayout(ctx context.Context, arg CreatePayoutParams) (Pay
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FailureReason,
 	)
 	return i, err
 }
 
 const getPayoutByClientID = `-- name: GetPayoutByClientID :one
-SELECT id, client_id, funding_source_id, amount, currency, status, created_at, updated_at
+SELECT id, client_id, funding_source_id, amount, currency, status, created_at, updated_at, failure_reason
 FROM payouts
 WHERE client_id = $1 AND id = $2
 `
@@ -68,12 +69,13 @@ func (q *Queries) GetPayoutByClientID(ctx context.Context, arg GetPayoutByClient
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FailureReason,
 	)
 	return i, err
 }
 
 const listPayoutsByClientID = `-- name: ListPayoutsByClientID :many
-SELECT id, client_id, funding_source_id, amount, currency, status, created_at, updated_at
+SELECT id, client_id, funding_source_id, amount, currency, status, created_at, updated_at, failure_reason
 FROM payouts
 WHERE client_id = $1
 ORDER BY created_at DESC, id DESC
@@ -104,6 +106,7 @@ func (q *Queries) ListPayoutsByClientID(ctx context.Context, arg ListPayoutsByCl
 			&i.Status,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.FailureReason,
 		); err != nil {
 			return nil, err
 		}
@@ -115,11 +118,42 @@ func (q *Queries) ListPayoutsByClientID(ctx context.Context, arg ListPayoutsByCl
 	return items, nil
 }
 
+const updatePayoutFailure = `-- name: UpdatePayoutFailure :one
+UPDATE payouts
+SET status = 'failed',
+    failure_reason = $1,
+    updated_at = NOW()
+WHERE id = $2
+RETURNING id, client_id, funding_source_id, amount, currency, status, created_at, updated_at, failure_reason
+`
+
+type UpdatePayoutFailureParams struct {
+	FailureReason pgtype.Text
+	ID            pgtype.UUID
+}
+
+func (q *Queries) UpdatePayoutFailure(ctx context.Context, arg UpdatePayoutFailureParams) (Payout, error) {
+	row := q.db.QueryRow(ctx, updatePayoutFailure, arg.FailureReason, arg.ID)
+	var i Payout
+	err := row.Scan(
+		&i.ID,
+		&i.ClientID,
+		&i.FundingSourceID,
+		&i.Amount,
+		&i.Currency,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FailureReason,
+	)
+	return i, err
+}
+
 const updatePayoutStatus = `-- name: UpdatePayoutStatus :one
 UPDATE payouts
 SET status = $1, updated_at = NOW()
 WHERE id = $2
-RETURNING id, client_id, funding_source_id, amount, currency, status, created_at, updated_at
+RETURNING id, client_id, funding_source_id, amount, currency, status, created_at, updated_at, failure_reason
 `
 
 type UpdatePayoutStatusParams struct {
@@ -139,6 +173,7 @@ func (q *Queries) UpdatePayoutStatus(ctx context.Context, arg UpdatePayoutStatus
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FailureReason,
 	)
 	return i, err
 }
