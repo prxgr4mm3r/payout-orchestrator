@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -72,57 +73,124 @@ func main() {
 		Handler: router,
 	}
 
-	errCh := make(chan error, 1)
-
-	go func() {
-		log.Printf("server is running on %s", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCh <- err
-		}
-
-		close(errCh)
-	}()
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var processorErrCh chan error
+	var runProcessor func(context.Context) error
 	if processorEnabled {
-		processorErrCh = make(chan error, 1)
-		go func() {
-			if err := payoutProcessor.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				processorErrCh <- err
-			}
-
-			close(processorErrCh)
-		}()
+		runProcessor = payoutProcessor.Run
 		log.Printf("background processor is enabled interval=%s claim_timeout=%s", pollInterval, claimTimeout)
 	} else {
 		log.Println("background processor is disabled")
 	}
 
-	select {
-	case err := <-errCh:
-		if err != nil {
-			log.Fatalf("server error: %v", err)
-		}
-	case err := <-processorErrCh:
-		if err != nil {
-			log.Fatalf("processor error: %v", err)
-		}
-	case <-ctx.Done():
-		log.Println("shutting down server...")
-	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("server shutdown error: %v", err)
+	log.Printf("server is running on %s", srv.Addr)
+	if err := runApplication(ctx, srv, srv.ListenAndServe, runProcessor, 5*time.Second, log.Default()); err != nil {
+		log.Fatalf("run application: %v", err)
 	}
 
 	log.Println("closing postgres pool...")
 	log.Println("server gracefully stopped")
+}
+
+func runApplication(
+	ctx context.Context,
+	srv *http.Server,
+	serve func() error,
+	runProcessor func(context.Context) error,
+	shutdownTimeout time.Duration,
+	logger *log.Logger,
+) error {
+	if srv == nil || serve == nil {
+		return errors.New("http server is not configured")
+	}
+	if logger == nil {
+		logger = log.Default()
+	}
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = 5 * time.Second
+	}
+
+	appCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- normalizeServeError(serve())
+	}()
+
+	var processorDone chan error
+	if runProcessor != nil {
+		processorDone = make(chan error, 1)
+		go func() {
+			processorDone <- normalizeProcessorError(runProcessor(appCtx))
+		}()
+	}
+
+	var serverErr error
+	serverDoneReceived := false
+	var processorErr error
+	processorDoneReceived := processorDone == nil
+
+	select {
+	case serverErr = <-serverDone:
+		serverDoneReceived = true
+	case processorErr = <-processorDone:
+		processorDoneReceived = true
+	case <-ctx.Done():
+		logger.Println("shutting down server...")
+	}
+
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer shutdownCancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		serverErr = firstNonNilError(serverErr, fmt.Errorf("shutdown server: %w", err))
+	}
+
+	if !serverDoneReceived {
+		serverErr = firstNonNilError(serverErr, <-serverDone)
+	}
+	if !processorDoneReceived {
+		processorErr = firstNonNilError(processorErr, <-processorDone)
+	}
+
+	if serverErr != nil {
+		return serverErr
+	}
+	if processorErr != nil {
+		return processorErr
+	}
+
+	return nil
+}
+
+func normalizeServeError(err error) error {
+	if err == nil || errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+
+	return err
+}
+
+func normalizeProcessorError(err error) error {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return nil
+	}
+
+	return err
+}
+
+func firstNonNilError(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func loadBoolEnv(name string, fallback bool) (bool, error) {
