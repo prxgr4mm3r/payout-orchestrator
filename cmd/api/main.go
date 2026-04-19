@@ -58,7 +58,7 @@ func main() {
 	payoutsHandler := handlers.NewPayoutsHandler(payoutsSvc)
 	payoutProcessor := processor.New(
 		processor.NewDBTxRunner(dbPool, queries),
-		processor.NewExecutionHandler(providersimulator.New(providersimulator.Config{})),
+		processor.NewExecutionHandler(providersimulator.New(providersimulator.Config{}), log.Default()),
 		log.Default(),
 		processor.Config{
 			PollInterval: pollInterval,

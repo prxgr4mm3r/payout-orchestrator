@@ -35,6 +35,7 @@ type payoutResponse struct {
 	Amount          string `json:"amount"`
 	Currency        string `json:"currency"`
 	Status          string `json:"status"`
+	FailureReason   string `json:"failure_reason,omitempty"`
 	CreatedAt       string `json:"created_at"`
 	UpdatedAt       string `json:"updated_at"`
 }
@@ -207,6 +208,7 @@ func payoutResponseFromService(payout payoutservice.Payout) payoutResponse {
 		Amount:          payout.Amount,
 		Currency:        payout.Currency,
 		Status:          payout.Status,
+		FailureReason:   payout.FailureReason,
 		CreatedAt:       payout.CreatedAt.Format(time.RFC3339Nano),
 		UpdatedAt:       payout.UpdatedAt.Format(time.RFC3339Nano),
 	}

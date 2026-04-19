@@ -55,4 +55,5 @@ type Payout struct {
 	Status          string
 	CreatedAt       pgtype.Timestamptz
 	UpdatedAt       pgtype.Timestamptz
+	FailureReason   pgtype.Text
 }

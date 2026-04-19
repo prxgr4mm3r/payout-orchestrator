@@ -80,6 +80,7 @@ type Payout struct {
 	Amount          string
 	Currency        string
 	Status          string
+	FailureReason   string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -301,6 +302,7 @@ func payoutFromDB(payout db.Payout) (Payout, error) {
 		Amount:          amount,
 		Currency:        payout.Currency,
 		Status:          payout.Status,
+		FailureReason:   payout.FailureReason.String,
 		CreatedAt:       payout.CreatedAt.Time,
 		UpdatedAt:       payout.UpdatedAt.Time,
 	}, nil

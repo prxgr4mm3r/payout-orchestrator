@@ -57,7 +57,7 @@ func TestCreatePayoutCreatesForAuthenticatedClient(t *testing.T) {
 				t.Fatalf("expected idempotency key payout-1, got %s", input.IdempotencyKey)
 			}
 
-			return servicePayout("efb98fe4-b75f-4f1d-b9c7-794e66da2abb", input.ClientID, "125.50", "USDC", "pending", now), nil
+			return servicePayout("efb98fe4-b75f-4f1d-b9c7-794e66da2abb", input.ClientID, "125.50", "USDC", "pending", "", now), nil
 		},
 	})
 
@@ -216,7 +216,7 @@ func TestGetPayoutFetchesAuthenticatedClientPayout(t *testing.T) {
 				t.Fatalf("expected payout id %s, got %s", expectedPayoutID, input.ID)
 			}
 
-			return servicePayout(input.ID, input.ClientID, "125.50", "USDC", "pending", now), nil
+			return servicePayout(input.ID, input.ClientID, "125.50", "USDC", "pending", "", now), nil
 		},
 	})
 
@@ -292,7 +292,7 @@ func TestListPayoutsFetchesAuthenticatedClientPayouts(t *testing.T) {
 			}
 
 			return []payoutservice.Payout{
-				servicePayout("efb98fe4-b75f-4f1d-b9c7-794e66da2abb", input.ClientID, "125.50", "USDC", "pending", now),
+				servicePayout("efb98fe4-b75f-4f1d-b9c7-794e66da2abb", input.ClientID, "125.50", "USDC", "pending", "", now),
 			}, nil
 		},
 	})
@@ -319,6 +319,39 @@ func TestListPayoutsFetchesAuthenticatedClientPayouts(t *testing.T) {
 	}
 	if response[0].ClientID != expectedClientID {
 		t.Fatalf("expected client id %s, got %s", expectedClientID, response[0].ClientID)
+	}
+}
+
+func TestGetPayoutIncludesFailureReason(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC)
+	handler := NewPayoutsHandler(fakePayoutReadService{
+		get: func(_ context.Context, input payoutservice.GetPayoutInput) (payoutservice.Payout, error) {
+			return servicePayout(input.ID, input.ClientID, "125.50", "USDC", "failed", "provider rejected payout", now), nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/payouts/efb98fe4-b75f-4f1d-b9c7-794e66da2abb", nil)
+	req.SetPathValue("id", "efb98fe4-b75f-4f1d-b9c7-794e66da2abb")
+	req = req.WithContext(apiauth.WithClient(req.Context(), apiauth.Client{
+		ID:   "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
+		Name: "acme",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.GetPayout(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var response payoutResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.FailureReason != "provider rejected payout" {
+		t.Fatalf("expected failure reason to be returned, got %q", response.FailureReason)
 	}
 }
 
@@ -370,7 +403,7 @@ func TestGetPayoutMapsUnexpectedErrors(t *testing.T) {
 	}
 }
 
-func servicePayout(id, clientID, amount, currency, status string, at time.Time) payoutservice.Payout {
+func servicePayout(id, clientID, amount, currency, status, failureReason string, at time.Time) payoutservice.Payout {
 	return payoutservice.Payout{
 		ID:              id,
 		ClientID:        clientID,
@@ -378,6 +411,7 @@ func servicePayout(id, clientID, amount, currency, status string, at time.Time) 
 		Amount:          amount,
 		Currency:        currency,
 		Status:          status,
+		FailureReason:   failureReason,
 		CreatedAt:       at,
 		UpdatedAt:       at,
 	}
