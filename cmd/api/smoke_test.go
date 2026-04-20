@@ -77,10 +77,11 @@ func TestMVPPayoutSmoke(t *testing.T) {
 	authSvc := authservice.NewService(queries)
 	fundingSourcesSvc := fundingservice.NewService(queries)
 	payoutsSvc := payoutservice.NewServiceWithTx(queries, payoutservice.NewDBTxRunner(appPool, queries))
+	logger := log.New(io.Discard, "", 0)
 	payoutProcessor := processor.New(
 		processor.NewDBTxRunner(appPool, queries),
-		processor.NewExecutionHandler(providersimulator.New(providersimulator.Config{})),
-		log.New(io.Discard, "", 0),
+		processor.NewExecutionHandler(providersimulator.New(providersimulator.Config{}), logger),
+		logger,
 		processor.Config{
 			PollInterval: 10 * time.Millisecond,
 			ClaimTimeout: time.Second,
