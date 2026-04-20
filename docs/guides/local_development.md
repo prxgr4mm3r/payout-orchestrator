@@ -34,4 +34,4 @@ ok
 
 ## MVP verification
 
-For the automated smoke test and the manual payout verification flow, see [mvp_verification.md](/home/prxgr4mmer/payout-orchestrator/docs/mvp_verification.md).
+For the automated smoke test and the manual payout verification flow, see [mvp_verification.md](/home/prxgr4mmer/payout-orchestrator/docs/guides/mvp_verification.md).
