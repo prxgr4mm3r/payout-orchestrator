@@ -14,7 +14,7 @@ import (
 const createClient = `-- name: CreateClient :one
 INSERT INTO clients (id, name, api_key, created_at, updated_at)
 VALUES ($1, $2, $3, NOW(), NOW())
-RETURNING id, name, api_key, created_at, updated_at
+RETURNING id, name, api_key, created_at, updated_at, webhook_url
 `
 
 type CreateClientParams struct {
@@ -32,12 +32,13 @@ func (q *Queries) CreateClient(ctx context.Context, arg CreateClientParams) (Cli
 		&i.ApiKey,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WebhookUrl,
 	)
 	return i, err
 }
 
 const getClientByApiKey = `-- name: GetClientByApiKey :one
-SELECT id, name, api_key, created_at, updated_at FROM clients WHERE api_key = $1
+SELECT id, name, api_key, created_at, updated_at, webhook_url FROM clients WHERE api_key = $1
 `
 
 func (q *Queries) GetClientByApiKey(ctx context.Context, apiKey pgtype.UUID) (Client, error) {
@@ -49,12 +50,13 @@ func (q *Queries) GetClientByApiKey(ctx context.Context, apiKey pgtype.UUID) (Cl
 		&i.ApiKey,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WebhookUrl,
 	)
 	return i, err
 }
 
 const getClientById = `-- name: GetClientById :one
-SELECT id, name, api_key, created_at, updated_at FROM clients WHERE id = $1
+SELECT id, name, api_key, created_at, updated_at, webhook_url FROM clients WHERE id = $1
 `
 
 func (q *Queries) GetClientById(ctx context.Context, id pgtype.UUID) (Client, error) {
@@ -66,12 +68,13 @@ func (q *Queries) GetClientById(ctx context.Context, id pgtype.UUID) (Client, er
 		&i.ApiKey,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WebhookUrl,
 	)
 	return i, err
 }
 
 const listClients = `-- name: ListClients :many
-SELECT id, name, api_key, created_at, updated_at FROM clients ORDER BY created_at DESC LIMIT $1 OFFSET $2
+SELECT id, name, api_key, created_at, updated_at, webhook_url FROM clients ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
 
 type ListClientsParams struct {
@@ -94,6 +97,7 @@ func (q *Queries) ListClients(ctx context.Context, arg ListClientsParams) ([]Cli
 			&i.ApiKey,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.WebhookUrl,
 		); err != nil {
 			return nil, err
 		}
@@ -106,7 +110,7 @@ func (q *Queries) ListClients(ctx context.Context, arg ListClientsParams) ([]Cli
 }
 
 const updateClient = `-- name: UpdateClient :one
-UPDATE clients SET name = $1, updated_at = NOW() WHERE id = $2 RETURNING id, name, api_key, created_at, updated_at
+UPDATE clients SET name = $1, updated_at = NOW() WHERE id = $2 RETURNING id, name, api_key, created_at, updated_at, webhook_url
 `
 
 type UpdateClientParams struct {
@@ -123,6 +127,33 @@ func (q *Queries) UpdateClient(ctx context.Context, arg UpdateClientParams) (Cli
 		&i.ApiKey,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WebhookUrl,
+	)
+	return i, err
+}
+
+const updateClientWebhookURL = `-- name: UpdateClientWebhookURL :one
+UPDATE clients
+SET webhook_url = $1, updated_at = NOW()
+WHERE id = $2
+RETURNING id, name, api_key, created_at, updated_at, webhook_url
+`
+
+type UpdateClientWebhookURLParams struct {
+	WebhookUrl pgtype.Text
+	ID         pgtype.UUID
+}
+
+func (q *Queries) UpdateClientWebhookURL(ctx context.Context, arg UpdateClientWebhookURLParams) (Client, error) {
+	row := q.db.QueryRow(ctx, updateClientWebhookURL, arg.WebhookUrl, arg.ID)
+	var i Client
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.ApiKey,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.WebhookUrl,
 	)
 	return i, err
 }
