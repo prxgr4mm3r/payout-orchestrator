@@ -47,13 +47,16 @@ type OutboxEvent struct {
 }
 
 type Payout struct {
-	ID              pgtype.UUID
-	ClientID        pgtype.UUID
-	FundingSourceID pgtype.UUID
-	Amount          pgtype.Numeric
-	Currency        string
-	Status          string
-	CreatedAt       pgtype.Timestamptz
-	UpdatedAt       pgtype.Timestamptz
-	FailureReason   pgtype.Text
+	ID                 pgtype.UUID
+	ClientID           pgtype.UUID
+	FundingSourceID    pgtype.UUID
+	Amount             pgtype.Numeric
+	Currency           string
+	Status             string
+	CreatedAt          pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+	FailureReason      pgtype.Text
+	ExternalID         pgtype.Text
+	RecipientName      pgtype.Text
+	RecipientAccountID pgtype.Text
 }

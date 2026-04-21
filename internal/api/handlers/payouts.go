@@ -29,21 +29,27 @@ type PayoutsHandler struct {
 }
 
 type payoutResponse struct {
-	ID              string `json:"id"`
-	ClientID        string `json:"client_id"`
-	FundingSourceID string `json:"funding_source_id"`
-	Amount          string `json:"amount"`
-	Currency        string `json:"currency"`
-	Status          string `json:"status"`
-	FailureReason   string `json:"failure_reason,omitempty"`
-	CreatedAt       string `json:"created_at"`
-	UpdatedAt       string `json:"updated_at"`
+	ID                 string `json:"id"`
+	ClientID           string `json:"client_id"`
+	FundingSourceID    string `json:"funding_source_id"`
+	ExternalID         string `json:"external_id,omitempty"`
+	RecipientName      string `json:"recipient_name,omitempty"`
+	RecipientAccountID string `json:"recipient_account_id,omitempty"`
+	Amount             string `json:"amount"`
+	Currency           string `json:"currency"`
+	Status             string `json:"status"`
+	FailureReason      string `json:"failure_reason,omitempty"`
+	CreatedAt          string `json:"created_at"`
+	UpdatedAt          string `json:"updated_at"`
 }
 
 type createPayoutRequest struct {
-	FundingSourceID string `json:"funding_source_id"`
-	Amount          string `json:"amount"`
-	Currency        string `json:"currency"`
+	FundingSourceID    string `json:"funding_source_id"`
+	ExternalID         string `json:"external_id"`
+	RecipientName      string `json:"recipient_name"`
+	RecipientAccountID string `json:"recipient_account_id"`
+	Amount             string `json:"amount"`
+	Currency           string `json:"currency"`
 }
 
 func NewPayoutsHandler(service PayoutReadService) *PayoutsHandler {
@@ -77,11 +83,14 @@ func (h PayoutsHandler) CreatePayout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payout, err := h.service.CreatePayout(r.Context(), payoutservice.CreatePayoutInput{
-		ClientID:        client.ID,
-		FundingSourceID: req.FundingSourceID,
-		IdempotencyKey:  idempotencyKey,
-		Amount:          req.Amount,
-		Currency:        req.Currency,
+		ClientID:           client.ID,
+		FundingSourceID:    req.FundingSourceID,
+		IdempotencyKey:     idempotencyKey,
+		ExternalID:         req.ExternalID,
+		RecipientName:      req.RecipientName,
+		RecipientAccountID: req.RecipientAccountID,
+		Amount:             req.Amount,
+		Currency:           req.Currency,
 	})
 	if err != nil {
 		switch {
@@ -89,6 +98,8 @@ func (h PayoutsHandler) CreatePayout(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid payout", http.StatusBadRequest)
 		case errors.Is(err, payoutservice.ErrIdempotencyConflict):
 			http.Error(w, "idempotency conflict", http.StatusConflict)
+		case errors.Is(err, payoutservice.ErrDuplicateExternalID):
+			http.Error(w, "duplicate external id", http.StatusConflict)
 		case errors.Is(err, payoutservice.ErrFundingSourceNotFound):
 			http.Error(w, "funding source not found", http.StatusNotFound)
 		case errors.Is(err, payoutservice.ErrInvalidClientID):
@@ -202,14 +213,17 @@ func payoutPagination(r *http.Request) (int32, int32, error) {
 
 func payoutResponseFromService(payout payoutservice.Payout) payoutResponse {
 	return payoutResponse{
-		ID:              payout.ID,
-		ClientID:        payout.ClientID,
-		FundingSourceID: payout.FundingSourceID,
-		Amount:          payout.Amount,
-		Currency:        payout.Currency,
-		Status:          payout.Status,
-		FailureReason:   payout.FailureReason,
-		CreatedAt:       payout.CreatedAt.Format(time.RFC3339Nano),
-		UpdatedAt:       payout.UpdatedAt.Format(time.RFC3339Nano),
+		ID:                 payout.ID,
+		ClientID:           payout.ClientID,
+		FundingSourceID:    payout.FundingSourceID,
+		ExternalID:         payout.ExternalID,
+		RecipientName:      payout.RecipientName,
+		RecipientAccountID: payout.RecipientAccountID,
+		Amount:             payout.Amount,
+		Currency:           payout.Currency,
+		Status:             payout.Status,
+		FailureReason:      payout.FailureReason,
+		CreatedAt:          payout.CreatedAt.Format(time.RFC3339Nano),
+		UpdatedAt:          payout.UpdatedAt.Format(time.RFC3339Nano),
 	}
 }

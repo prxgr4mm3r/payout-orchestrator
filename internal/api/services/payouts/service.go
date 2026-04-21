@@ -20,6 +20,7 @@ import (
 
 var (
 	ErrInvalidClientID        = errors.New("invalid client id")
+	ErrDuplicateExternalID    = errors.New("duplicate external id")
 	ErrInvalidFundingSourceID = errors.New("invalid funding source id")
 	ErrInvalidIdempotencyKey  = errors.New("invalid idempotency key")
 	ErrInvalidPagination      = errors.New("invalid pagination")
@@ -66,23 +67,29 @@ type ListPayoutsInput struct {
 }
 
 type CreatePayoutInput struct {
-	ClientID        string
-	FundingSourceID string
-	IdempotencyKey  string
-	Amount          string
-	Currency        string
+	ClientID           string
+	FundingSourceID    string
+	IdempotencyKey     string
+	ExternalID         string
+	RecipientName      string
+	RecipientAccountID string
+	Amount             string
+	Currency           string
 }
 
 type Payout struct {
-	ID              string
-	ClientID        string
-	FundingSourceID string
-	Amount          string
-	Currency        string
-	Status          string
-	FailureReason   string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID                 string
+	ClientID           string
+	FundingSourceID    string
+	ExternalID         string
+	RecipientName      string
+	RecipientAccountID string
+	Amount             string
+	Currency           string
+	Status             string
+	FailureReason      string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 type payoutCreatedOutboxPayload struct {
@@ -118,6 +125,18 @@ func (s *Service) CreatePayout(ctx context.Context, input CreatePayoutInput) (Pa
 	if err != nil {
 		return Payout{}, ErrInvalidFundingSourceID
 	}
+	externalID, ok := normalizeOptionalText(input.ExternalID, 255)
+	if !ok {
+		return Payout{}, ErrInvalidPayout
+	}
+	recipientName, ok := normalizeRequiredText(input.RecipientName, 255)
+	if !ok {
+		return Payout{}, ErrInvalidPayout
+	}
+	recipientAccountID, ok := normalizeRequiredText(input.RecipientAccountID, 255)
+	if !ok {
+		return Payout{}, ErrInvalidPayout
+	}
 
 	amount, err := parsePositiveNumeric(input.Amount)
 	if err != nil {
@@ -138,7 +157,15 @@ func (s *Service) CreatePayout(ctx context.Context, input CreatePayoutInput) (Pa
 	if err != nil {
 		return Payout{}, err
 	}
-	requestHash := createPayoutRequestHash(clientID.String(), fundingSourceID.String(), amountHashValue, currency)
+	requestHash := createPayoutRequestHash(
+		clientID.String(),
+		fundingSourceID.String(),
+		externalID,
+		recipientName,
+		recipientAccountID,
+		amountHashValue,
+		currency,
+	)
 
 	var payout db.Payout
 
@@ -164,12 +191,19 @@ func (s *Service) CreatePayout(ctx context.Context, input CreatePayoutInput) (Pa
 		}
 
 		created, err := store.CreatePayout(ctx, db.CreatePayoutParams{
-			ClientID:        clientID,
-			FundingSourceID: fundingSourceID,
-			Amount:          amount,
-			Currency:        currency,
+			ClientID:           clientID,
+			FundingSourceID:    fundingSourceID,
+			ExternalID:         textParam(externalID),
+			RecipientName:      textParam(recipientName),
+			RecipientAccountID: textParam(recipientAccountID),
+			Amount:             amount,
+			Currency:           currency,
 		})
 		if err != nil {
+			if isUniqueConstraintViolation(err, "ux_payouts_client_external_id") {
+				return ErrDuplicateExternalID
+			}
+
 			return err
 		}
 
@@ -296,15 +330,18 @@ func payoutFromDB(payout db.Payout) (Payout, error) {
 	}
 
 	return Payout{
-		ID:              payout.ID.String(),
-		ClientID:        payout.ClientID.String(),
-		FundingSourceID: payout.FundingSourceID.String(),
-		Amount:          amount,
-		Currency:        payout.Currency,
-		Status:          payout.Status,
-		FailureReason:   payout.FailureReason.String,
-		CreatedAt:       payout.CreatedAt.Time,
-		UpdatedAt:       payout.UpdatedAt.Time,
+		ID:                 payout.ID.String(),
+		ClientID:           payout.ClientID.String(),
+		FundingSourceID:    payout.FundingSourceID.String(),
+		ExternalID:         payout.ExternalID.String,
+		RecipientName:      payout.RecipientName.String,
+		RecipientAccountID: payout.RecipientAccountID.String,
+		Amount:             amount,
+		Currency:           payout.Currency,
+		Status:             payout.Status,
+		FailureReason:      payout.FailureReason.String,
+		CreatedAt:          payout.CreatedAt.Time,
+		UpdatedAt:          payout.UpdatedAt.Time,
 	}, nil
 }
 
@@ -341,9 +378,9 @@ func marshalPayoutCreatedOutboxPayload(payout db.Payout) ([]byte, error) {
 	})
 }
 
-func createPayoutRequestHash(clientID, fundingSourceID, amount, currency string) string {
+func createPayoutRequestHash(parts ...string) string {
 	hash := sha256.New()
-	for _, part := range []string{clientID, fundingSourceID, amount, currency} {
+	for _, part := range parts {
 		_, _ = hash.Write([]byte(part))
 		_, _ = hash.Write([]byte{0})
 	}
@@ -375,6 +412,33 @@ func loadIdempotentPayout(ctx context.Context, store PayoutStore, clientID pgtyp
 	}
 
 	return payout, true, nil
+}
+
+func normalizeRequiredText(raw string, maxLen int) (string, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" || len(value) > maxLen {
+		return "", false
+	}
+
+	return value, true
+}
+
+func normalizeOptionalText(raw string, maxLen int) (string, bool) {
+	value := strings.TrimSpace(raw)
+	if len(value) > maxLen {
+		return "", false
+	}
+
+	return value, true
+}
+
+func textParam(value string) pgtype.Text {
+	return pgtype.Text{String: value, Valid: value != ""}
+}
+
+func isUniqueConstraintViolation(err error, constraint string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == constraint
 }
 
 func isUniqueViolation(err error) bool {

@@ -321,9 +321,12 @@ func createPayoutOverHTTP(t *testing.T, baseURL, apiKey, fundingSourceID string)
 	t.Helper()
 
 	body := map[string]string{
-		"funding_source_id": fundingSourceID,
-		"amount":            "125.50",
-		"currency":          "USDC",
+		"funding_source_id":    fundingSourceID,
+		"external_id":          "smoke-ext-1",
+		"recipient_name":       "Smoke Recipient",
+		"recipient_account_id": "acct_recipient_smoke_123",
+		"amount":               "125.50",
+		"currency":             "USDC",
 	}
 
 	var response smokePayoutResponse

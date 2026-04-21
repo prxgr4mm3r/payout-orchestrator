@@ -47,6 +47,15 @@ func TestCreatePayoutCreatesForAuthenticatedClient(t *testing.T) {
 			if input.FundingSourceID != expectedFundingSourceID {
 				t.Fatalf("expected funding source id %s, got %s", expectedFundingSourceID, input.FundingSourceID)
 			}
+			if input.ExternalID != "client-payout-1" {
+				t.Fatalf("expected external id client-payout-1, got %s", input.ExternalID)
+			}
+			if input.RecipientName != "Ada Lovelace" {
+				t.Fatalf("expected recipient name Ada Lovelace, got %s", input.RecipientName)
+			}
+			if input.RecipientAccountID != "acct_recipient_123" {
+				t.Fatalf("expected recipient account id acct_recipient_123, got %s", input.RecipientAccountID)
+			}
 			if input.Amount != "125.50" {
 				t.Fatalf("expected amount 125.50, got %s", input.Amount)
 			}
@@ -63,6 +72,9 @@ func TestCreatePayoutCreatesForAuthenticatedClient(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/payouts", strings.NewReader(`{
 		"funding_source_id": "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
+		"external_id": "client-payout-1",
+		"recipient_name": "Ada Lovelace",
+		"recipient_account_id": "acct_recipient_123",
 		"amount": "125.50",
 		"currency": "USDC"
 	}`))
@@ -86,6 +98,15 @@ func TestCreatePayoutCreatesForAuthenticatedClient(t *testing.T) {
 	if response.ClientID != expectedClientID {
 		t.Fatalf("expected client id %s, got %s", expectedClientID, response.ClientID)
 	}
+	if response.ExternalID != "client-payout-1" {
+		t.Fatalf("expected external id client-payout-1, got %s", response.ExternalID)
+	}
+	if response.RecipientName != "Ada Lovelace" {
+		t.Fatalf("expected recipient name Ada Lovelace, got %s", response.RecipientName)
+	}
+	if response.RecipientAccountID != "acct_recipient_123" {
+		t.Fatalf("expected recipient account id acct_recipient_123, got %s", response.RecipientAccountID)
+	}
 	if response.Status != "pending" {
 		t.Fatalf("expected status pending, got %s", response.Status)
 	}
@@ -102,6 +123,9 @@ func TestCreatePayoutMapsFundingSourceNotFound(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/payouts", strings.NewReader(`{
 		"funding_source_id": "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
+		"external_id": "client-payout-1",
+		"recipient_name": "Ada Lovelace",
+		"recipient_account_id": "acct_recipient_123",
 		"amount": "125.50",
 		"currency": "USDC"
 	}`))
@@ -130,6 +154,40 @@ func TestCreatePayoutMapsIdempotencyConflict(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/payouts", strings.NewReader(`{
 		"funding_source_id": "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
+		"external_id": "client-payout-1",
+		"recipient_name": "Ada Lovelace",
+		"recipient_account_id": "acct_recipient_123",
+		"amount": "125.50",
+		"currency": "USDC"
+	}`))
+	req.Header.Set(idempotencyKeyHeader, "payout-1")
+	req = req.WithContext(apiauth.WithClient(req.Context(), apiauth.Client{
+		ID:   "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
+		Name: "acme",
+	}))
+	rec := httptest.NewRecorder()
+
+	handler.CreatePayout(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected %d, got %d", http.StatusConflict, rec.Code)
+	}
+}
+
+func TestCreatePayoutMapsDuplicateExternalID(t *testing.T) {
+	t.Parallel()
+
+	handler := NewPayoutsHandler(fakePayoutReadService{
+		create: func(context.Context, payoutservice.CreatePayoutInput) (payoutservice.Payout, error) {
+			return payoutservice.Payout{}, payoutservice.ErrDuplicateExternalID
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/payouts", strings.NewReader(`{
+		"funding_source_id": "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
+		"external_id": "client-payout-1",
+		"recipient_name": "Ada Lovelace",
+		"recipient_account_id": "acct_recipient_123",
 		"amount": "125.50",
 		"currency": "USDC"
 	}`))
@@ -159,6 +217,9 @@ func TestCreatePayoutRejectsMissingIdempotencyKey(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/payouts", strings.NewReader(`{
 		"funding_source_id": "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
+		"external_id": "client-payout-1",
+		"recipient_name": "Ada Lovelace",
+		"recipient_account_id": "acct_recipient_123",
 		"amount": "125.50",
 		"currency": "USDC"
 	}`))
@@ -405,14 +466,17 @@ func TestGetPayoutMapsUnexpectedErrors(t *testing.T) {
 
 func servicePayout(id, clientID, amount, currency, status, failureReason string, at time.Time) payoutservice.Payout {
 	return payoutservice.Payout{
-		ID:              id,
-		ClientID:        clientID,
-		FundingSourceID: "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
-		Amount:          amount,
-		Currency:        currency,
-		Status:          status,
-		FailureReason:   failureReason,
-		CreatedAt:       at,
-		UpdatedAt:       at,
+		ID:                 id,
+		ClientID:           clientID,
+		FundingSourceID:    "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
+		ExternalID:         "client-payout-1",
+		RecipientName:      "Ada Lovelace",
+		RecipientAccountID: "acct_recipient_123",
+		Amount:             amount,
+		Currency:           currency,
+		Status:             status,
+		FailureReason:      failureReason,
+		CreatedAt:          at,
+		UpdatedAt:          at,
 	}
 }

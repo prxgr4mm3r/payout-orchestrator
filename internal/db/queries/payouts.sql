@@ -1,6 +1,14 @@
 -- name: CreatePayout :one
-INSERT INTO payouts (client_id, funding_source_id, amount, currency)
-VALUES ($1, $2, $3, $4)
+INSERT INTO payouts (
+    client_id,
+    funding_source_id,
+    external_id,
+    recipient_name,
+    recipient_account_id,
+    amount,
+    currency
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING *;
 
 -- name: GetPayoutByClientID :one
