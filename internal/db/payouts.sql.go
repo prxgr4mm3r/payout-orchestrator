@@ -12,22 +12,36 @@ import (
 )
 
 const createPayout = `-- name: CreatePayout :one
-INSERT INTO payouts (client_id, funding_source_id, amount, currency)
-VALUES ($1, $2, $3, $4)
-RETURNING id, client_id, funding_source_id, amount, currency, status, created_at, updated_at, failure_reason
+INSERT INTO payouts (
+    client_id,
+    funding_source_id,
+    external_id,
+    recipient_name,
+    recipient_account_id,
+    amount,
+    currency
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, client_id, funding_source_id, amount, currency, status, created_at, updated_at, failure_reason, external_id, recipient_name, recipient_account_id
 `
 
 type CreatePayoutParams struct {
-	ClientID        pgtype.UUID
-	FundingSourceID pgtype.UUID
-	Amount          pgtype.Numeric
-	Currency        string
+	ClientID           pgtype.UUID
+	FundingSourceID    pgtype.UUID
+	ExternalID         pgtype.Text
+	RecipientName      pgtype.Text
+	RecipientAccountID pgtype.Text
+	Amount             pgtype.Numeric
+	Currency           string
 }
 
 func (q *Queries) CreatePayout(ctx context.Context, arg CreatePayoutParams) (Payout, error) {
 	row := q.db.QueryRow(ctx, createPayout,
 		arg.ClientID,
 		arg.FundingSourceID,
+		arg.ExternalID,
+		arg.RecipientName,
+		arg.RecipientAccountID,
 		arg.Amount,
 		arg.Currency,
 	)
@@ -42,12 +56,15 @@ func (q *Queries) CreatePayout(ctx context.Context, arg CreatePayoutParams) (Pay
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FailureReason,
+		&i.ExternalID,
+		&i.RecipientName,
+		&i.RecipientAccountID,
 	)
 	return i, err
 }
 
 const getPayoutByClientID = `-- name: GetPayoutByClientID :one
-SELECT id, client_id, funding_source_id, amount, currency, status, created_at, updated_at, failure_reason
+SELECT id, client_id, funding_source_id, amount, currency, status, created_at, updated_at, failure_reason, external_id, recipient_name, recipient_account_id
 FROM payouts
 WHERE client_id = $1 AND id = $2
 `
@@ -70,12 +87,15 @@ func (q *Queries) GetPayoutByClientID(ctx context.Context, arg GetPayoutByClient
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FailureReason,
+		&i.ExternalID,
+		&i.RecipientName,
+		&i.RecipientAccountID,
 	)
 	return i, err
 }
 
 const listPayoutsByClientID = `-- name: ListPayoutsByClientID :many
-SELECT id, client_id, funding_source_id, amount, currency, status, created_at, updated_at, failure_reason
+SELECT id, client_id, funding_source_id, amount, currency, status, created_at, updated_at, failure_reason, external_id, recipient_name, recipient_account_id
 FROM payouts
 WHERE client_id = $1
 ORDER BY created_at DESC, id DESC
@@ -107,6 +127,9 @@ func (q *Queries) ListPayoutsByClientID(ctx context.Context, arg ListPayoutsByCl
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.FailureReason,
+			&i.ExternalID,
+			&i.RecipientName,
+			&i.RecipientAccountID,
 		); err != nil {
 			return nil, err
 		}
@@ -124,7 +147,7 @@ SET status = 'failed',
     failure_reason = $1,
     updated_at = NOW()
 WHERE id = $2
-RETURNING id, client_id, funding_source_id, amount, currency, status, created_at, updated_at, failure_reason
+RETURNING id, client_id, funding_source_id, amount, currency, status, created_at, updated_at, failure_reason, external_id, recipient_name, recipient_account_id
 `
 
 type UpdatePayoutFailureParams struct {
@@ -145,6 +168,9 @@ func (q *Queries) UpdatePayoutFailure(ctx context.Context, arg UpdatePayoutFailu
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FailureReason,
+		&i.ExternalID,
+		&i.RecipientName,
+		&i.RecipientAccountID,
 	)
 	return i, err
 }
@@ -153,7 +179,7 @@ const updatePayoutStatus = `-- name: UpdatePayoutStatus :one
 UPDATE payouts
 SET status = $1, updated_at = NOW()
 WHERE id = $2
-RETURNING id, client_id, funding_source_id, amount, currency, status, created_at, updated_at, failure_reason
+RETURNING id, client_id, funding_source_id, amount, currency, status, created_at, updated_at, failure_reason, external_id, recipient_name, recipient_account_id
 `
 
 type UpdatePayoutStatusParams struct {
@@ -174,6 +200,9 @@ func (q *Queries) UpdatePayoutStatus(ctx context.Context, arg UpdatePayoutStatus
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FailureReason,
+		&i.ExternalID,
+		&i.RecipientName,
+		&i.RecipientAccountID,
 	)
 	return i, err
 }
