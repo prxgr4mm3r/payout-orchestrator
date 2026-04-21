@@ -64,7 +64,7 @@ curl -sS \
   -H 'X-API-Key: <api-key>' \
   -H 'Idempotency-Key: manual-payout-1' \
   -H 'Content-Type: application/json' \
-  -d '{"funding_source_id":"<funding-source-id>","amount":"125.50","currency":"USDC"}' \
+  -d '{"funding_source_id":"<funding-source-id>","external_id":"manual-ext-1","recipient_name":"Manual recipient","recipient_account_id":"acct_recipient_manual_123","amount":"125.50","currency":"USDC"}' \
   http://localhost:8080/payouts
 ```
 
