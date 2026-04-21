@@ -64,6 +64,19 @@ PR naming:
 - `[feat] V1-02 Payout business fields`
 - `[feat] V1-05 RabbitMQ payout worker`
 
+### 2.4 PR Handoff Rules
+
+At the end of each completed PR, Codex must provide a handoff package for the human maintainer.
+
+The handoff package must include:
+
+- the exact branch switch command to start the PR branch locally
+- the exact commit commands for each intended commit in order
+- the final PR title
+- the final PR description using the repository PR template
+
+The branch and commit commands are for the human maintainer to run manually.
+
 ---
 
 ## 3. PR Template
