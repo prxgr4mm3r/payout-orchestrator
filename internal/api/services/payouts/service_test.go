@@ -97,6 +97,15 @@ func TestCreatePayoutValidatesFundingSourceOwnership(t *testing.T) {
 			if arg.FundingSourceID != fundingSourceID {
 				t.Fatalf("expected funding source id %s, got %s", fundingSourceID.String(), arg.FundingSourceID.String())
 			}
+			if arg.ExternalID.String != "client-payout-1" || !arg.ExternalID.Valid {
+				t.Fatalf("expected external id client-payout-1, got %#v", arg.ExternalID)
+			}
+			if arg.RecipientName.String != "Ada Lovelace" || !arg.RecipientName.Valid {
+				t.Fatalf("expected recipient name Ada Lovelace, got %#v", arg.RecipientName)
+			}
+			if arg.RecipientAccountID.String != "acct_recipient_123" || !arg.RecipientAccountID.Valid {
+				t.Fatalf("expected recipient account id acct_recipient_123, got %#v", arg.RecipientAccountID)
+			}
 			if got, err := numericString(arg.Amount); err != nil || got != "125.50" {
 				t.Fatalf("expected amount 125.50, got %s: %v", got, err)
 			}
@@ -104,7 +113,12 @@ func TestCreatePayoutValidatesFundingSourceOwnership(t *testing.T) {
 				t.Fatalf("expected currency USDC, got %s", arg.Currency)
 			}
 
-			return dbPayout(payoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", "", now), nil
+			payout := dbPayout(payoutID, clientID, fundingSourceID, "125.50", "USDC", "pending", "", now)
+			payout.ExternalID = textValue("client-payout-1")
+			payout.RecipientName = textValue("Ada Lovelace")
+			payout.RecipientAccountID = textValue("acct_recipient_123")
+
+			return payout, nil
 		},
 		createIdempotency: func(_ context.Context, arg db.CreateIdempotencyKeyParams) (db.IdempotencyKey, error) {
 			if arg.ClientID != clientID {
@@ -116,7 +130,15 @@ func TestCreatePayoutValidatesFundingSourceOwnership(t *testing.T) {
 			if arg.PayoutID != payoutID {
 				t.Fatalf("expected idempotency payout id %s, got %s", payoutID.String(), arg.PayoutID.String())
 			}
-			wantHash := createPayoutRequestHash(clientID.String(), fundingSourceID.String(), "125.50", "USDC")
+			wantHash := createPayoutRequestHash(
+				clientID.String(),
+				fundingSourceID.String(),
+				"client-payout-1",
+				"Ada Lovelace",
+				"acct_recipient_123",
+				"125.50",
+				"USDC",
+			)
 			if arg.RequestHash != wantHash {
 				t.Fatalf("expected request hash %s, got %s", wantHash, arg.RequestHash)
 			}
@@ -145,11 +167,14 @@ func TestCreatePayoutValidatesFundingSourceOwnership(t *testing.T) {
 	})
 
 	payout, err := service.CreatePayout(context.Background(), CreatePayoutInput{
-		ClientID:        clientID.String(),
-		FundingSourceID: fundingSourceID.String(),
-		IdempotencyKey:  " payout-1 ",
-		Amount:          "125.50",
-		Currency:        " USDC ",
+		ClientID:           clientID.String(),
+		FundingSourceID:    fundingSourceID.String(),
+		IdempotencyKey:     " payout-1 ",
+		ExternalID:         " client-payout-1 ",
+		RecipientName:      " Ada Lovelace ",
+		RecipientAccountID: " acct_recipient_123 ",
+		Amount:             "125.50",
+		Currency:           " USDC ",
 	})
 	if err != nil {
 		t.Fatalf("create payout: %v", err)
@@ -157,6 +182,15 @@ func TestCreatePayoutValidatesFundingSourceOwnership(t *testing.T) {
 
 	if payout.ID != payoutID.String() {
 		t.Fatalf("expected id %s, got %s", payoutID.String(), payout.ID)
+	}
+	if payout.ExternalID != "client-payout-1" {
+		t.Fatalf("expected external id client-payout-1, got %s", payout.ExternalID)
+	}
+	if payout.RecipientName != "Ada Lovelace" {
+		t.Fatalf("expected recipient name Ada Lovelace, got %s", payout.RecipientName)
+	}
+	if payout.RecipientAccountID != "acct_recipient_123" {
+		t.Fatalf("expected recipient account id acct_recipient_123, got %s", payout.RecipientAccountID)
 	}
 	if payout.Status != "pending" {
 		t.Fatalf("expected status pending, got %s", payout.Status)
@@ -180,11 +214,14 @@ func TestCreatePayoutRejectsUnownedFundingSource(t *testing.T) {
 	})
 
 	_, err := service.CreatePayout(context.Background(), CreatePayoutInput{
-		ClientID:        "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
-		FundingSourceID: "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
-		IdempotencyKey:  "payout-1",
-		Amount:          "125.50",
-		Currency:        "USDC",
+		ClientID:           "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
+		FundingSourceID:    "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
+		IdempotencyKey:     "payout-1",
+		ExternalID:         "client-payout-1",
+		RecipientName:      "Ada Lovelace",
+		RecipientAccountID: "acct_recipient_123",
+		Amount:             "125.50",
+		Currency:           "USDC",
 	})
 	if !errors.Is(err, ErrFundingSourceNotFound) {
 		t.Fatalf("expected ErrFundingSourceNotFound, got %v", err)
@@ -202,11 +239,14 @@ func TestCreatePayoutRejectsInvalidInput(t *testing.T) {
 	})
 
 	_, err := service.CreatePayout(context.Background(), CreatePayoutInput{
-		ClientID:        "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
-		FundingSourceID: "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
-		IdempotencyKey:  "payout-1",
-		Amount:          "0",
-		Currency:        "USDC",
+		ClientID:           "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
+		FundingSourceID:    "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
+		IdempotencyKey:     "payout-1",
+		ExternalID:         "client-payout-1",
+		RecipientName:      "",
+		RecipientAccountID: "acct_recipient_123",
+		Amount:             "0",
+		Currency:           "USDC",
 	})
 	if !errors.Is(err, ErrInvalidPayout) {
 		t.Fatalf("expected ErrInvalidPayout, got %v", err)
@@ -220,7 +260,15 @@ func TestCreatePayoutReturnsExistingPayoutForDuplicateRequest(t *testing.T) {
 	payoutID := mustUUID(t, "efb98fe4-b75f-4f1d-b9c7-794e66da2abb")
 	fundingSourceID := mustUUID(t, "b76e34c6-d2da-45b1-a0c1-307bc76918bd")
 	now := time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC)
-	requestHash := createPayoutRequestHash(clientID.String(), fundingSourceID.String(), "125.50", "USDC")
+	requestHash := createPayoutRequestHash(
+		clientID.String(),
+		fundingSourceID.String(),
+		"client-payout-1",
+		"Ada Lovelace",
+		"acct_recipient_123",
+		"125.50",
+		"USDC",
+	)
 
 	service := NewService(fakePayoutStore{
 		getIdempotency: func(_ context.Context, arg db.GetIdempotencyKeyParams) (db.IdempotencyKey, error) {
@@ -263,11 +311,14 @@ func TestCreatePayoutReturnsExistingPayoutForDuplicateRequest(t *testing.T) {
 	})
 
 	payout, err := service.CreatePayout(context.Background(), CreatePayoutInput{
-		ClientID:        clientID.String(),
-		FundingSourceID: fundingSourceID.String(),
-		IdempotencyKey:  "payout-1",
-		Amount:          "125.50",
-		Currency:        " USDC ",
+		ClientID:           clientID.String(),
+		FundingSourceID:    fundingSourceID.String(),
+		IdempotencyKey:     "payout-1",
+		ExternalID:         "client-payout-1",
+		RecipientName:      "Ada Lovelace",
+		RecipientAccountID: "acct_recipient_123",
+		Amount:             "125.50",
+		Currency:           " USDC ",
 	})
 	if err != nil {
 		t.Fatalf("create payout: %v", err)
@@ -319,11 +370,14 @@ func TestCreatePayoutRejectsIdempotencyConflict(t *testing.T) {
 	})
 
 	_, err := service.CreatePayout(context.Background(), CreatePayoutInput{
-		ClientID:        clientID.String(),
-		FundingSourceID: fundingSourceID.String(),
-		IdempotencyKey:  "payout-1",
-		Amount:          "125.50",
-		Currency:        "USDC",
+		ClientID:           clientID.String(),
+		FundingSourceID:    fundingSourceID.String(),
+		IdempotencyKey:     "payout-1",
+		ExternalID:         "client-payout-1",
+		RecipientName:      "Ada Lovelace",
+		RecipientAccountID: "acct_recipient_123",
+		Amount:             "125.50",
+		Currency:           "USDC",
 	})
 	if !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("expected ErrIdempotencyConflict, got %v", err)
@@ -341,10 +395,13 @@ func TestCreatePayoutRejectsMissingIdempotencyKey(t *testing.T) {
 	})
 
 	_, err := service.CreatePayout(context.Background(), CreatePayoutInput{
-		ClientID:        "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
-		FundingSourceID: "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
-		Amount:          "125.50",
-		Currency:        "USDC",
+		ClientID:           "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
+		FundingSourceID:    "b76e34c6-d2da-45b1-a0c1-307bc76918bd",
+		ExternalID:         "client-payout-1",
+		RecipientName:      "Ada Lovelace",
+		RecipientAccountID: "acct_recipient_123",
+		Amount:             "125.50",
+		Currency:           "USDC",
 	})
 	if !errors.Is(err, ErrInvalidIdempotencyKey) {
 		t.Fatalf("expected ErrInvalidIdempotencyKey, got %v", err)
@@ -403,11 +460,14 @@ func TestCreatePayoutUsesTransactionalStore(t *testing.T) {
 	})
 
 	payout, err := service.CreatePayout(context.Background(), CreatePayoutInput{
-		ClientID:        clientID.String(),
-		FundingSourceID: fundingSourceID.String(),
-		IdempotencyKey:  "payout-1",
-		Amount:          "125.50",
-		Currency:        "USDC",
+		ClientID:           clientID.String(),
+		FundingSourceID:    fundingSourceID.String(),
+		IdempotencyKey:     "payout-1",
+		ExternalID:         "client-payout-1",
+		RecipientName:      "Ada Lovelace",
+		RecipientAccountID: "acct_recipient_123",
+		Amount:             "125.50",
+		Currency:           "USDC",
 	})
 	if err != nil {
 		t.Fatalf("create payout: %v", err)
@@ -428,7 +488,15 @@ func TestCreatePayoutLoadsExistingPayoutAfterConcurrentIdempotencyInsert(t *test
 	transientPayoutID := mustUUID(t, "5bc7aaf3-bb45-46ea-887f-e81b690e6730")
 	fundingSourceID := mustUUID(t, "b76e34c6-d2da-45b1-a0c1-307bc76918bd")
 	now := time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
-	requestHash := createPayoutRequestHash(clientID.String(), fundingSourceID.String(), "125.50", "USDC")
+	requestHash := createPayoutRequestHash(
+		clientID.String(),
+		fundingSourceID.String(),
+		"client-payout-1",
+		"Ada Lovelace",
+		"acct_recipient_123",
+		"125.50",
+		"USDC",
+	)
 
 	baseStore := fakePayoutStore{
 		getIdempotency: func(context.Context, db.GetIdempotencyKeyParams) (db.IdempotencyKey, error) {
@@ -469,11 +537,14 @@ func TestCreatePayoutLoadsExistingPayoutAfterConcurrentIdempotencyInsert(t *test
 	})
 
 	payout, err := service.CreatePayout(context.Background(), CreatePayoutInput{
-		ClientID:        clientID.String(),
-		FundingSourceID: fundingSourceID.String(),
-		IdempotencyKey:  "payout-1",
-		Amount:          "125.50",
-		Currency:        "USDC",
+		ClientID:           clientID.String(),
+		FundingSourceID:    fundingSourceID.String(),
+		IdempotencyKey:     "payout-1",
+		ExternalID:         "client-payout-1",
+		RecipientName:      "Ada Lovelace",
+		RecipientAccountID: "acct_recipient_123",
+		Amount:             "125.50",
+		Currency:           "USDC",
 	})
 	if err != nil {
 		t.Fatalf("create payout: %v", err)
@@ -511,14 +582,53 @@ func TestCreatePayoutReturnsOutboxWriteError(t *testing.T) {
 	})
 
 	_, err := service.CreatePayout(context.Background(), CreatePayoutInput{
-		ClientID:        clientID.String(),
-		FundingSourceID: fundingSourceID.String(),
-		IdempotencyKey:  "payout-1",
-		Amount:          "125.50",
-		Currency:        "USDC",
+		ClientID:           clientID.String(),
+		FundingSourceID:    fundingSourceID.String(),
+		IdempotencyKey:     "payout-1",
+		ExternalID:         "client-payout-1",
+		RecipientName:      "Ada Lovelace",
+		RecipientAccountID: "acct_recipient_123",
+		Amount:             "125.50",
+		Currency:           "USDC",
 	})
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected outbox error %v, got %v", expectedErr, err)
+	}
+}
+
+func TestCreatePayoutRejectsDuplicateExternalID(t *testing.T) {
+	t.Parallel()
+
+	clientID := mustUUID(t, "2c97a4da-38a7-46a8-9205-6482d0cfc6fb")
+	fundingSourceID := mustUUID(t, "b76e34c6-d2da-45b1-a0c1-307bc76918bd")
+
+	service := NewService(fakePayoutStore{
+		getIdempotency: func(context.Context, db.GetIdempotencyKeyParams) (db.IdempotencyKey, error) {
+			return db.IdempotencyKey{}, pgx.ErrNoRows
+		},
+		getFundingSource: func(context.Context, db.GetFundingSourceByClientIDParams) (db.FundingSource, error) {
+			return db.FundingSource{ID: fundingSourceID, ClientID: clientID}, nil
+		},
+		create: func(context.Context, db.CreatePayoutParams) (db.Payout, error) {
+			return db.Payout{}, &pgconn.PgError{
+				Code:           "23505",
+				ConstraintName: "ux_payouts_client_external_id",
+			}
+		},
+	})
+
+	_, err := service.CreatePayout(context.Background(), CreatePayoutInput{
+		ClientID:           clientID.String(),
+		FundingSourceID:    fundingSourceID.String(),
+		IdempotencyKey:     "payout-1",
+		ExternalID:         "client-payout-1",
+		RecipientName:      "Ada Lovelace",
+		RecipientAccountID: "acct_recipient_123",
+		Amount:             "125.50",
+		Currency:           "USDC",
+	})
+	if !errors.Is(err, ErrDuplicateExternalID) {
+		t.Fatalf("expected ErrDuplicateExternalID, got %v", err)
 	}
 }
 
@@ -753,6 +863,10 @@ func dbPayout(id, clientID, fundingSourceID pgtype.UUID, amount, currency, statu
 		CreatedAt:       pgtype.Timestamptz{Time: at, Valid: true},
 		UpdatedAt:       pgtype.Timestamptz{Time: at, Valid: true},
 	}
+}
+
+func textValue(value string) pgtype.Text {
+	return pgtype.Text{String: value, Valid: value != ""}
 }
 
 func numeric(rawInt string, exp int32) pgtype.Numeric {
