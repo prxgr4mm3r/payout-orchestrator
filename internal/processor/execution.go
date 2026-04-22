@@ -2,7 +2,6 @@ package processor
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"math/big"
@@ -12,47 +11,54 @@ import (
 
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
 	payoutdomain "github.com/prxgr4mm3r/payout-orchestrator/internal/domain/payout"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/outbox"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/platform/pgtypeutil"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/provider"
 )
-
-const payoutCreatedOutboxEventType = "process_payout"
 
 var (
 	ErrInvalidOutboxPayload       = errors.New("invalid outbox payload")
 	ErrInvalidOutboxEntity        = errors.New("invalid outbox entity")
 	ErrPayoutNotReadyForExecution = errors.New("payout is not ready for execution")
+	ErrUnsupportedPublishedEvent  = errors.New("unsupported published event")
 	ErrUnsupportedProviderResult  = errors.New("unsupported provider result")
 	ErrUnsupportedNumeric         = errors.New("unsupported numeric value")
 )
 
-type payoutCreatedOutboxPayload struct {
-	PayoutID string `json:"payout_id"`
-	ClientID string `json:"client_id"`
-}
-
 type ExecutionHandler struct {
+	txRunner TxRunner
 	provider provider.PayoutProvider
 	logger   *log.Logger
 }
 
-func NewExecutionHandler(provider provider.PayoutProvider, logger *log.Logger) *ExecutionHandler {
+func NewExecutionHandler(txRunner TxRunner, provider provider.PayoutProvider, logger *log.Logger) *ExecutionHandler {
 	if logger == nil {
 		logger = log.Default()
 	}
 
 	return &ExecutionHandler{
+		txRunner: txRunner,
 		provider: provider,
 		logger:   logger,
 	}
 }
 
-func (h *ExecutionHandler) HandleOutboxEvent(ctx context.Context, store Store, event db.OutboxEvent) error {
-	if h == nil || h.provider == nil {
+func (h *ExecutionHandler) HandlePublishedEvent(ctx context.Context, event outbox.PublishableEvent) error {
+	if h == nil || h.txRunner == nil || h.provider == nil {
 		return errors.New("processor execution handler is not configured")
 	}
-	if event.EventType != payoutCreatedOutboxEventType {
-		return ErrSkipClaim
+	if event.EventType != outbox.EventTypeProcessPayout {
+		return ErrUnsupportedPublishedEvent
+	}
+
+	return h.txRunner.WithinTx(ctx, func(store Store) error {
+		return h.execute(ctx, store, event)
+	})
+}
+
+func (h *ExecutionHandler) execute(ctx context.Context, store Store, event outbox.PublishableEvent) error {
+	if store == nil {
+		return errors.New("processor store is not configured")
 	}
 
 	payload, err := parsePayoutCreatedOutboxPayload(event.Payload)
@@ -86,8 +92,7 @@ func (h *ExecutionHandler) HandleOutboxEvent(ctx context.Context, store Store, e
 		}
 	case payoutdomain.StatusProcessing:
 	case payoutdomain.StatusSucceeded:
-		_, err := store.MarkOutboxEventAsProcessed(ctx, event.ID)
-		return err
+		return nil
 	default:
 		return ErrPayoutNotReadyForExecution
 	}
@@ -117,14 +122,10 @@ func (h *ExecutionHandler) HandleOutboxEvent(ctx context.Context, store Store, e
 			return err
 		}
 
-		if _, err := store.MarkOutboxEventAsProcessed(ctx, event.ID); err != nil {
-			return err
-		}
-
 		h.logger.Printf(
-			"payout execution succeeded payout_id=%s outbox_event_id=%s funding_source_id=%s",
+			"payout execution succeeded payout_id=%s published_event_id=%s funding_source_id=%s",
 			payoutRecord.ID.String(),
-			event.ID.String(),
+			event.ID,
 			fundingSource.ID.String(),
 		)
 		return nil
@@ -139,14 +140,10 @@ func (h *ExecutionHandler) HandleOutboxEvent(ctx context.Context, store Store, e
 			return err
 		}
 
-		if _, err := store.MarkOutboxEventAsProcessed(ctx, event.ID); err != nil {
-			return err
-		}
-
 		h.logger.Printf(
-			"payout execution failed payout_id=%s outbox_event_id=%s funding_source_id=%s failure_reason=%q",
+			"payout execution failed payout_id=%s published_event_id=%s funding_source_id=%s failure_reason=%q",
 			payoutRecord.ID.String(),
-			event.ID.String(),
+			event.ID,
 			fundingSource.ID.String(),
 			result.FailureReason,
 		)
@@ -162,8 +159,8 @@ type parsedPayoutCreatedOutboxPayload struct {
 }
 
 func parsePayoutCreatedOutboxPayload(raw []byte) (parsedPayoutCreatedOutboxPayload, error) {
-	var payload payoutCreatedOutboxPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	payload, err := outbox.UnmarshalProcessPayoutPayload(raw)
+	if err != nil {
 		return parsedPayoutCreatedOutboxPayload{}, ErrInvalidOutboxPayload
 	}
 

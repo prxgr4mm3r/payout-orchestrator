@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/outbox"
 )
 
 type fakePayoutStore struct {
@@ -146,8 +147,8 @@ func TestCreatePayoutValidatesFundingSourceOwnership(t *testing.T) {
 			return db.IdempotencyKey{Key: arg.Key, ClientID: arg.ClientID, RequestHash: arg.RequestHash, PayoutID: arg.PayoutID}, nil
 		},
 		createOutbox: func(_ context.Context, arg db.CreateOutboxEventParams) (db.OutboxEvent, error) {
-			if arg.EventType != payoutCreatedOutboxEventType {
-				t.Fatalf("expected outbox event type %s, got %s", payoutCreatedOutboxEventType, arg.EventType)
+			if arg.EventType != outbox.EventTypeProcessPayout {
+				t.Fatalf("expected outbox event type %s, got %s", outbox.EventTypeProcessPayout, arg.EventType)
 			}
 			if arg.EntityID != payoutID {
 				t.Fatalf("expected outbox entity id %s, got %s", payoutID.String(), arg.EntityID.String())
@@ -440,8 +441,8 @@ func TestCreatePayoutUsesTransactionalStore(t *testing.T) {
 			return db.IdempotencyKey{}, nil
 		},
 		createOutbox: func(_ context.Context, arg db.CreateOutboxEventParams) (db.OutboxEvent, error) {
-			if arg.EventType != payoutCreatedOutboxEventType {
-				t.Fatalf("expected outbox event type %s, got %s", payoutCreatedOutboxEventType, arg.EventType)
+			if arg.EventType != outbox.EventTypeProcessPayout {
+				t.Fatalf("expected outbox event type %s, got %s", outbox.EventTypeProcessPayout, arg.EventType)
 			}
 			if arg.EntityID != payoutID {
 				t.Fatalf("expected outbox entity id %s, got %s", payoutID.String(), arg.EntityID.String())
