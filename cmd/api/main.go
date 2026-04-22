@@ -18,6 +18,7 @@ import (
 	fundingservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/fundingsources"
 	payoutservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/payouts"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/outbox"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/platform/postgres"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/processor"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/providersimulator"
@@ -56,11 +57,15 @@ func main() {
 	clientsHandler := &handlers.ClientsHandler{}
 	fundingSourcesHandler := handlers.NewFundingSourcesHandler(fundingSourcesSvc)
 	payoutsHandler := handlers.NewPayoutsHandler(payoutsSvc)
-	payoutProcessor := processor.New(
-		processor.NewDBTxRunner(dbPool, queries),
-		processor.NewExecutionHandler(providersimulator.New(providersimulator.Config{}), log.Default()),
+	payoutProcessor := outbox.NewPublisher(
+		outbox.NewDBTxRunner(dbPool, queries),
+		outbox.NewInlinePublisher(processor.NewExecutionHandler(
+			processor.NewDBTxRunner(dbPool, queries),
+			providersimulator.New(providersimulator.Config{}),
+			log.Default(),
+		)),
 		log.Default(),
-		processor.Config{
+		outbox.Config{
 			PollInterval: pollInterval,
 			ClaimTimeout: claimTimeout,
 		},
