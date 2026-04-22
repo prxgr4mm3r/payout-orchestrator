@@ -9,11 +9,12 @@ import (
 )
 
 type Client struct {
-	ID        pgtype.UUID
-	Name      string
-	ApiKey    pgtype.UUID
-	CreatedAt pgtype.Timestamptz
-	UpdatedAt pgtype.Timestamptz
+	ID         pgtype.UUID
+	Name       string
+	ApiKey     pgtype.UUID
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+	WebhookUrl pgtype.Text
 }
 
 type FundingSource struct {
@@ -59,4 +60,16 @@ type Payout struct {
 	ExternalID         pgtype.Text
 	RecipientName      pgtype.Text
 	RecipientAccountID pgtype.Text
+}
+
+type WebhookDelivery struct {
+	ID           pgtype.UUID
+	PayoutID     pgtype.UUID
+	ClientID     pgtype.UUID
+	TargetUrl    string
+	Payload      []byte
+	Status       string
+	AttemptCount int32
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
 }

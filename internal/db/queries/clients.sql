@@ -14,3 +14,9 @@ SELECT * FROM clients ORDER BY created_at DESC LIMIT $1 OFFSET $2;
 
 -- name: UpdateClient :one
 UPDATE clients SET name = $1, updated_at = NOW() WHERE id = $2 RETURNING *;
+
+-- name: UpdateClientWebhookURL :one
+UPDATE clients
+SET webhook_url = $1, updated_at = NOW()
+WHERE id = $2
+RETURNING *;
