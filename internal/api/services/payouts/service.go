@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"math/big"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/outbox"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/platform/pgtypeutil"
 )
 
@@ -33,8 +33,6 @@ var (
 )
 
 var errConcurrentIdempotencyKeyInsert = errors.New("concurrent idempotency key insert")
-
-const payoutCreatedOutboxEventType = "process_payout"
 
 type PayoutStore interface {
 	CreateIdempotencyKey(ctx context.Context, arg db.CreateIdempotencyKeyParams) (db.IdempotencyKey, error)
@@ -90,11 +88,6 @@ type Payout struct {
 	FailureReason      string
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
-}
-
-type payoutCreatedOutboxPayload struct {
-	PayoutID string `json:"payout_id"`
-	ClientID string `json:"client_id"`
 }
 
 func NewService(store PayoutStore) *Service {
@@ -226,7 +219,7 @@ func (s *Service) CreatePayout(ctx context.Context, input CreatePayoutInput) (Pa
 		}
 
 		if _, err := store.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
-			EventType: payoutCreatedOutboxEventType,
+			EventType: outbox.EventTypeProcessPayout,
 			EntityID:  created.ID,
 			Payload:   payload,
 		}); err != nil {
@@ -372,10 +365,7 @@ func numericString(value pgtype.Numeric) (string, error) {
 }
 
 func marshalPayoutCreatedOutboxPayload(payout db.Payout) ([]byte, error) {
-	return json.Marshal(payoutCreatedOutboxPayload{
-		PayoutID: payout.ID.String(),
-		ClientID: payout.ClientID.String(),
-	})
+	return outbox.MarshalProcessPayoutPayload(payout.ID.String(), payout.ClientID.String())
 }
 
 func createPayoutRequestHash(parts ...string) string {

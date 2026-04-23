@@ -26,6 +26,7 @@ import (
 	fundingservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/fundingsources"
 	payoutservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/payouts"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/outbox"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/processor"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/providersimulator"
 )
@@ -78,11 +79,15 @@ func TestMVPPayoutSmoke(t *testing.T) {
 	fundingSourcesSvc := fundingservice.NewService(queries)
 	payoutsSvc := payoutservice.NewServiceWithTx(queries, payoutservice.NewDBTxRunner(appPool, queries))
 	logger := log.New(io.Discard, "", 0)
-	payoutProcessor := processor.New(
-		processor.NewDBTxRunner(appPool, queries),
-		processor.NewExecutionHandler(providersimulator.New(providersimulator.Config{}), logger),
+	outboxRelay := outbox.NewRelay(
+		outbox.NewDBTxRunner(appPool, queries),
+		outbox.NewInlineDispatcher(processor.NewExecutionHandler(
+			processor.NewDBTxRunner(appPool, queries),
+			providersimulator.New(providersimulator.Config{}),
+			logger,
+		)),
 		logger,
-		processor.Config{
+		outbox.Config{
 			PollInterval: 10 * time.Millisecond,
 			ClaimTimeout: time.Second,
 		},
@@ -113,7 +118,7 @@ func TestMVPPayoutSmoke(t *testing.T) {
 			runCtx,
 			server,
 			func() error { return server.Serve(listener) },
-			payoutProcessor.Run,
+			outboxRelay.Run,
 			5*time.Second,
 			log.New(io.Discard, "", 0),
 		)
