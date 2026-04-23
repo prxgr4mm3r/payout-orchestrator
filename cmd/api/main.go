@@ -17,15 +17,16 @@ import (
 	authservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/auth"
 	fundingservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/fundingsources"
 	payoutservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/payouts"
+	rabbitmqbroker "github.com/prxgr4mm3r/payout-orchestrator/internal/broker/rabbitmq"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/outbox"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/platform/postgres"
-	"github.com/prxgr4mm3r/payout-orchestrator/internal/processor"
-	"github.com/prxgr4mm3r/payout-orchestrator/internal/providersimulator"
 )
 
 func main() {
 	dbURL := os.Getenv("DB_URL")
+	rabbitmqURL := os.Getenv("RABBITMQ_URL")
+	payoutQueueName := loadStringEnv("PAYOUT_QUEUE_NAME", "payout.jobs")
 	processorEnabled, err := loadBoolEnv("PROCESSOR_ENABLED", false)
 	if err != nil {
 		log.Fatalf("load PROCESSOR_ENABLED: %v", err)
@@ -57,19 +58,29 @@ func main() {
 	clientsHandler := &handlers.ClientsHandler{}
 	fundingSourcesHandler := handlers.NewFundingSourcesHandler(fundingSourcesSvc)
 	payoutsHandler := handlers.NewPayoutsHandler(payoutsSvc)
-	outboxRelay := outbox.NewRelay(
-		outbox.NewDBTxRunner(dbPool, queries),
-		outbox.NewInlineDispatcher(processor.NewExecutionHandler(
-			processor.NewDBTxRunner(dbPool, queries),
-			providersimulator.New(providersimulator.Config{}),
+	var outboxRelay *outbox.Relay
+	var rabbitmqClient *rabbitmqbroker.Client
+	if processorEnabled {
+		rabbitmqClient, err = rabbitmqbroker.Open(rabbitmqURL)
+		if err != nil {
+			log.Fatalf("open rabbitmq: %v", err)
+		}
+		defer rabbitmqClient.Close()
+
+		if err := rabbitmqClient.EnsureQueue(payoutQueueName); err != nil {
+			log.Fatalf("ensure payout queue: %v", err)
+		}
+
+		outboxRelay = outbox.NewRelay(
+			outbox.NewDBTxRunner(dbPool, queries),
+			rabbitmqbroker.NewPayoutPublisher(rabbitmqClient, payoutQueueName),
 			log.Default(),
-		)),
-		log.Default(),
-		outbox.Config{
-			PollInterval: pollInterval,
-			ClaimTimeout: claimTimeout,
-		},
-	)
+			outbox.Config{
+				PollInterval: pollInterval,
+				ClaimTimeout: claimTimeout,
+			},
+		)
+	}
 
 	router := NewRouter(clientsHandler, fundingSourcesHandler, payoutsHandler, middleware.APIKey(authSvc))
 
@@ -84,9 +95,14 @@ func main() {
 	var runProcessor func(context.Context) error
 	if processorEnabled {
 		runProcessor = outboxRelay.Run
-		log.Printf("background processor is enabled interval=%s claim_timeout=%s", pollInterval, claimTimeout)
+		log.Printf(
+			"outbox relay publisher is enabled interval=%s claim_timeout=%s queue=%s",
+			pollInterval,
+			claimTimeout,
+			payoutQueueName,
+		)
 	} else {
-		log.Println("background processor is disabled")
+		log.Println("outbox relay publisher is disabled")
 	}
 
 	log.Printf("server is running on %s", srv.Addr)
@@ -224,4 +240,13 @@ func loadDurationEnv(name string, fallback time.Duration) (time.Duration, error)
 	}
 
 	return value, nil
+}
+
+func loadStringEnv(name, fallback string) string {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return fallback
+	}
+
+	return raw
 }
