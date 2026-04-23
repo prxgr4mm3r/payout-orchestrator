@@ -23,7 +23,24 @@ The goal is:
 
 ## 2. Working Rules
 
-### 2.1 Pull Request Rules
+### 2.1 Pre-Implementation Discussion
+
+Before implementing the next PR, Codex and the human maintainer must discuss the
+implementation plan.
+
+Codex must provide the discussion package in this structure:
+
+- `What problem are we solving?`
+- `What is the current code state relative to this problem?`
+- `How will we solve this problem?`
+
+The discussion must happen before code changes for the PR begin. The goal is to
+make the implementation approach explicit before any branch accumulates diff.
+
+After the discussion, Codex may proceed with implementation only when the human
+maintainer asks Codex to implement the PR or a specific part of it.
+
+### 2.2 Pull Request Rules
 
 Each PR must follow these rules:
 
@@ -34,7 +51,7 @@ Each PR must follow these rules:
 - each PR must remain buildable and manually verifiable
 - generated files should be isolated in their own commit when possible
 
-### 2.2 Commit Rules
+### 2.3 Commit Rules
 
 Each commit must follow these rules:
 
@@ -44,7 +61,7 @@ Each commit must follow these rules:
 - schema, SQL, generated code, and runtime wiring should be split when possible
 - tests for new logic should be in the same commit or immediately after it
 
-### 2.3 Naming Rules
+### 2.4 Naming Rules
 
 Branch naming:
 
@@ -64,7 +81,7 @@ PR naming:
 - `[feat] V1-02 Payout business fields`
 - `[feat] V1-05 RabbitMQ payout worker`
 
-### 2.4 PR Handoff Rules
+### 2.5 PR Handoff Rules
 
 At the end of each completed PR, Codex must provide a handoff package for the human maintainer.
 
