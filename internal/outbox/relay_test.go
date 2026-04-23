@@ -20,10 +20,10 @@ type fakeStore struct {
 }
 
 type fakeTxRunner struct {
-	run func(ctx context.Context, fn func(store Store) error) error
+	run func(ctx context.Context, fn func(store EventStore) error) error
 }
 
-func (f fakeTxRunner) WithinTx(ctx context.Context, fn func(store Store) error) error {
+func (f fakeTxRunner) WithinTx(ctx context.Context, fn func(store EventStore) error) error {
 	return f.run(ctx, fn)
 }
 
@@ -39,17 +39,17 @@ func (f fakeStore) ReleaseOutboxEventClaim(ctx context.Context, id pgtype.UUID) 
 	return f.release(ctx, id)
 }
 
-func TestRunOncePublishesClaimedEvent(t *testing.T) {
+func TestRunOnceDispatchesClaimedEvent(t *testing.T) {
 	t.Parallel()
 
 	eventID := mustUUID(t, "efb98fe4-b75f-4f1d-b9c7-794e66da2abb")
 	entityID := mustUUID(t, "2c97a4da-38a7-46a8-9205-6482d0cfc6fb")
-	published := false
+	dispatched := false
 	markedProcessed := false
 	txCalls := 0
 
-	publisher := NewPublisher(fakeTxRunner{
-		run: func(ctx context.Context, fn func(store Store) error) error {
+	relay := NewRelay(fakeTxRunner{
+		run: func(ctx context.Context, fn func(store EventStore) error) error {
 			txCalls++
 			switch txCalls {
 			case 1:
@@ -72,7 +72,7 @@ func TestRunOncePublishesClaimedEvent(t *testing.T) {
 						return db.OutboxEvent{}, nil
 					},
 					release: func(context.Context, pgtype.UUID) (db.OutboxEvent, error) {
-						t.Fatal("release should not be called on successful publish")
+						t.Fatal("release should not be called on successful dispatch")
 						return db.OutboxEvent{}, nil
 					},
 				})
@@ -90,7 +90,7 @@ func TestRunOncePublishesClaimedEvent(t *testing.T) {
 						return db.OutboxEvent{ID: id, Status: "processed"}, nil
 					},
 					release: func(context.Context, pgtype.UUID) (db.OutboxEvent, error) {
-						t.Fatal("release should not be called on successful publish")
+						t.Fatal("release should not be called on successful dispatch")
 						return db.OutboxEvent{}, nil
 					},
 				})
@@ -99,8 +99,8 @@ func TestRunOncePublishesClaimedEvent(t *testing.T) {
 				return nil
 			}
 		},
-	}, EventPublisherFunc(func(_ context.Context, event PublishableEvent) error {
-		published = true
+	}, eventDispatcherFunc(func(_ context.Context, event Event) error {
+		dispatched = true
 		if event.ID != eventID.String() {
 			t.Fatalf("expected event id %s, got %s", eventID.String(), event.ID)
 		}
@@ -114,15 +114,15 @@ func TestRunOncePublishesClaimedEvent(t *testing.T) {
 		return nil
 	}), log.New(io.Discard, "", 0), Config{ClaimTimeout: 15 * time.Second})
 
-	claimed, err := publisher.RunOnce(context.Background())
+	claimed, err := relay.RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("run once: %v", err)
 	}
 	if !claimed {
-		t.Fatal("expected outbox event to be published")
+		t.Fatal("expected outbox event to be dispatched")
 	}
-	if !published {
-		t.Fatal("expected event publisher to be called")
+	if !dispatched {
+		t.Fatal("expected event dispatcher to be called")
 	}
 	if !markedProcessed {
 		t.Fatal("expected outbox event to be marked processed")
@@ -132,16 +132,16 @@ func TestRunOncePublishesClaimedEvent(t *testing.T) {
 	}
 }
 
-func TestRunOnceReleasesClaimWhenPublishFails(t *testing.T) {
+func TestRunOnceReleasesClaimWhenDispatchFails(t *testing.T) {
 	t.Parallel()
 
 	eventID := mustUUID(t, "efb98fe4-b75f-4f1d-b9c7-794e66da2abb")
-	expectedErr := errors.New("publish event")
+	expectedErr := errors.New("dispatch event")
 	released := false
 	txCalls := 0
 
-	publisher := NewPublisher(fakeTxRunner{
-		run: func(ctx context.Context, fn func(store Store) error) error {
+	relay := NewRelay(fakeTxRunner{
+		run: func(ctx context.Context, fn func(store EventStore) error) error {
 			txCalls++
 			switch txCalls {
 			case 1:
@@ -150,7 +150,7 @@ func TestRunOnceReleasesClaimWhenPublishFails(t *testing.T) {
 						return db.OutboxEvent{ID: eventID}, nil
 					},
 					markProcessed: func(context.Context, pgtype.UUID) (db.OutboxEvent, error) {
-						t.Fatal("mark processed should not be called when publish fails")
+						t.Fatal("mark processed should not be called when dispatch fails")
 						return db.OutboxEvent{}, nil
 					},
 					release: func(context.Context, pgtype.UUID) (db.OutboxEvent, error) {
@@ -165,7 +165,7 @@ func TestRunOnceReleasesClaimWhenPublishFails(t *testing.T) {
 						return db.OutboxEvent{}, nil
 					},
 					markProcessed: func(context.Context, pgtype.UUID) (db.OutboxEvent, error) {
-						t.Fatal("mark processed should not be called when publish fails")
+						t.Fatal("mark processed should not be called when dispatch fails")
 						return db.OutboxEvent{}, nil
 					},
 					release: func(_ context.Context, id pgtype.UUID) (db.OutboxEvent, error) {
@@ -181,26 +181,26 @@ func TestRunOnceReleasesClaimWhenPublishFails(t *testing.T) {
 				return nil
 			}
 		},
-	}, EventPublisherFunc(func(context.Context, PublishableEvent) error {
+	}, eventDispatcherFunc(func(context.Context, Event) error {
 		return expectedErr
 	}), log.New(io.Discard, "", 0), Config{})
 
-	claimed, err := publisher.RunOnce(context.Background())
+	claimed, err := relay.RunOnce(context.Background())
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected error %v, got %v", expectedErr, err)
 	}
 	if claimed {
-		t.Fatal("expected failed publish not to report success")
+		t.Fatal("expected failed dispatch not to report success")
 	}
 	if !released {
 		t.Fatal("expected claim to be released")
 	}
 }
 
-func TestInlinePublisherForwardsPublishedEvent(t *testing.T) {
+func TestInlineDispatcherForwardsEvent(t *testing.T) {
 	t.Parallel()
 
-	expected := PublishableEvent{
+	expected := Event{
 		ID:        "efb98fe4-b75f-4f1d-b9c7-794e66da2abb",
 		EventType: EventTypeProcessPayout,
 		EntityID:  "2c97a4da-38a7-46a8-9205-6482d0cfc6fb",
@@ -208,7 +208,7 @@ func TestInlinePublisherForwardsPublishedEvent(t *testing.T) {
 	}
 
 	called := false
-	publisher := NewInlinePublisher(publishedEventHandlerFunc(func(_ context.Context, event PublishableEvent) error {
+	dispatcher := NewInlineDispatcher(eventHandlerFunc(func(_ context.Context, event Event) error {
 		called = true
 		if event.ID != expected.ID {
 			t.Fatalf("expected id %s, got %s", expected.ID, event.ID)
@@ -219,17 +219,23 @@ func TestInlinePublisherForwardsPublishedEvent(t *testing.T) {
 		return nil
 	}))
 
-	if err := publisher.Publish(context.Background(), expected); err != nil {
-		t.Fatalf("publish inline event: %v", err)
+	if err := dispatcher.Dispatch(context.Background(), expected); err != nil {
+		t.Fatalf("dispatch inline event: %v", err)
 	}
 	if !called {
-		t.Fatal("expected inline publisher to call handler")
+		t.Fatal("expected inline dispatcher to call handler")
 	}
 }
 
-type publishedEventHandlerFunc func(ctx context.Context, event PublishableEvent) error
+type eventDispatcherFunc func(ctx context.Context, event Event) error
 
-func (f publishedEventHandlerFunc) HandlePublishedEvent(ctx context.Context, event PublishableEvent) error {
+func (f eventDispatcherFunc) Dispatch(ctx context.Context, event Event) error {
+	return f(ctx, event)
+}
+
+type eventHandlerFunc func(ctx context.Context, event Event) error
+
+func (f eventHandlerFunc) HandleEvent(ctx context.Context, event Event) error {
 	return f(ctx, event)
 }
 

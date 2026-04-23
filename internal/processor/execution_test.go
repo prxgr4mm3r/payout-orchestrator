@@ -55,7 +55,7 @@ func (f fakeProvider) ExecutePayout(ctx context.Context, input provider.ExecuteP
 	return f.execute(ctx, input)
 }
 
-func TestHandlePublishedEventProcessesPayoutToSuccess(t *testing.T) {
+func TestHandleEventProcessesPayoutToSuccess(t *testing.T) {
 	t.Parallel()
 
 	eventID := "efb98fe4-b75f-4f1d-b9c7-794e66da2abb"
@@ -135,14 +135,14 @@ func TestHandlePublishedEventProcessesPayoutToSuccess(t *testing.T) {
 		},
 	}, log.New(io.Discard, "", 0))
 
-	err = handler.HandlePublishedEvent(context.Background(), outbox.PublishableEvent{
+	err = handler.HandleEvent(context.Background(), outbox.Event{
 		ID:        eventID,
 		EventType: outbox.EventTypeProcessPayout,
 		EntityID:  payoutID.String(),
 		Payload:   payload,
 	})
 	if err != nil {
-		t.Fatalf("handle published event: %v", err)
+		t.Fatalf("handle event: %v", err)
 	}
 	if !providerCalled {
 		t.Fatal("expected provider to be called")
@@ -158,7 +158,7 @@ func TestHandlePublishedEventProcessesPayoutToSuccess(t *testing.T) {
 	}
 }
 
-func TestHandlePublishedEventPersistsFailedPayoutOutcome(t *testing.T) {
+func TestHandleEventPersistsFailedPayoutOutcome(t *testing.T) {
 	t.Parallel()
 
 	payoutID := mustUUID(t, "8f6d6580-5dc1-43ca-bcea-b6faf36b2b32")
@@ -206,21 +206,21 @@ func TestHandlePublishedEventPersistsFailedPayoutOutcome(t *testing.T) {
 		},
 	}, log.New(io.Discard, "", 0))
 
-	err = handler.HandlePublishedEvent(context.Background(), outbox.PublishableEvent{
+	err = handler.HandleEvent(context.Background(), outbox.Event{
 		ID:        "efb98fe4-b75f-4f1d-b9c7-794e66da2abb",
 		EventType: outbox.EventTypeProcessPayout,
 		EntityID:  payoutID.String(),
 		Payload:   payload,
 	})
 	if err != nil {
-		t.Fatalf("handle published event: %v", err)
+		t.Fatalf("handle event: %v", err)
 	}
 	if failedReason != "provider rejected payout" {
 		t.Fatalf("expected failure reason to be persisted, got %q", failedReason)
 	}
 }
 
-func TestHandlePublishedEventRejectsUnsupportedType(t *testing.T) {
+func TestHandleEventRejectsUnsupportedType(t *testing.T) {
 	t.Parallel()
 
 	handler := NewExecutionHandler(fakeTxRunner{
@@ -230,12 +230,12 @@ func TestHandlePublishedEventRejectsUnsupportedType(t *testing.T) {
 		},
 	}, fakeProvider{}, log.New(io.Discard, "", 0))
 
-	err := handler.HandlePublishedEvent(context.Background(), outbox.PublishableEvent{
+	err := handler.HandleEvent(context.Background(), outbox.Event{
 		ID:        "efb98fe4-b75f-4f1d-b9c7-794e66da2abb",
 		EventType: "unsupported",
 	})
-	if !errors.Is(err, ErrUnsupportedPublishedEvent) {
-		t.Fatalf("expected ErrUnsupportedPublishedEvent, got %v", err)
+	if !errors.Is(err, ErrUnsupportedEvent) {
+		t.Fatalf("expected ErrUnsupportedEvent, got %v", err)
 	}
 }
 

@@ -79,9 +79,9 @@ func TestMVPPayoutSmoke(t *testing.T) {
 	fundingSourcesSvc := fundingservice.NewService(queries)
 	payoutsSvc := payoutservice.NewServiceWithTx(queries, payoutservice.NewDBTxRunner(appPool, queries))
 	logger := log.New(io.Discard, "", 0)
-	payoutProcessor := outbox.NewPublisher(
+	outboxRelay := outbox.NewRelay(
 		outbox.NewDBTxRunner(appPool, queries),
-		outbox.NewInlinePublisher(processor.NewExecutionHandler(
+		outbox.NewInlineDispatcher(processor.NewExecutionHandler(
 			processor.NewDBTxRunner(appPool, queries),
 			providersimulator.New(providersimulator.Config{}),
 			logger,
@@ -118,7 +118,7 @@ func TestMVPPayoutSmoke(t *testing.T) {
 			runCtx,
 			server,
 			func() error { return server.Serve(listener) },
-			payoutProcessor.Run,
+			outboxRelay.Run,
 			5*time.Second,
 			log.New(io.Discard, "", 0),
 		)

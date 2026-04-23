@@ -20,7 +20,7 @@ var (
 	ErrInvalidOutboxPayload       = errors.New("invalid outbox payload")
 	ErrInvalidOutboxEntity        = errors.New("invalid outbox entity")
 	ErrPayoutNotReadyForExecution = errors.New("payout is not ready for execution")
-	ErrUnsupportedPublishedEvent  = errors.New("unsupported published event")
+	ErrUnsupportedEvent           = errors.New("unsupported event")
 	ErrUnsupportedProviderResult  = errors.New("unsupported provider result")
 	ErrUnsupportedNumeric         = errors.New("unsupported numeric value")
 )
@@ -43,12 +43,12 @@ func NewExecutionHandler(txRunner TxRunner, provider provider.PayoutProvider, lo
 	}
 }
 
-func (h *ExecutionHandler) HandlePublishedEvent(ctx context.Context, event outbox.PublishableEvent) error {
+func (h *ExecutionHandler) HandleEvent(ctx context.Context, event outbox.Event) error {
 	if h == nil || h.txRunner == nil || h.provider == nil {
 		return errors.New("processor execution handler is not configured")
 	}
 	if event.EventType != outbox.EventTypeProcessPayout {
-		return ErrUnsupportedPublishedEvent
+		return ErrUnsupportedEvent
 	}
 
 	return h.txRunner.WithinTx(ctx, func(store Store) error {
@@ -56,7 +56,7 @@ func (h *ExecutionHandler) HandlePublishedEvent(ctx context.Context, event outbo
 	})
 }
 
-func (h *ExecutionHandler) execute(ctx context.Context, store Store, event outbox.PublishableEvent) error {
+func (h *ExecutionHandler) execute(ctx context.Context, store Store, event outbox.Event) error {
 	if store == nil {
 		return errors.New("processor store is not configured")
 	}
@@ -123,7 +123,7 @@ func (h *ExecutionHandler) execute(ctx context.Context, store Store, event outbo
 		}
 
 		h.logger.Printf(
-			"payout execution succeeded payout_id=%s published_event_id=%s funding_source_id=%s",
+			"payout execution succeeded payout_id=%s event_id=%s funding_source_id=%s",
 			payoutRecord.ID.String(),
 			event.ID,
 			fundingSource.ID.String(),
@@ -141,7 +141,7 @@ func (h *ExecutionHandler) execute(ctx context.Context, store Store, event outbo
 		}
 
 		h.logger.Printf(
-			"payout execution failed payout_id=%s published_event_id=%s funding_source_id=%s failure_reason=%q",
+			"payout execution failed payout_id=%s event_id=%s funding_source_id=%s failure_reason=%q",
 			payoutRecord.ID.String(),
 			event.ID,
 			fundingSource.ID.String(),

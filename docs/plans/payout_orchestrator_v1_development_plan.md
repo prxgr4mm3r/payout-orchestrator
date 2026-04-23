@@ -164,7 +164,7 @@ Outcomes:
 - clients can have delivery settings
 - webhook delivery attempts have a persistent home before workers are added
 
-### PR-04 Outbox Publisher Boundary
+### PR-04 Outbox Relay Boundary
 
 Goal:
 
@@ -172,15 +172,15 @@ Goal:
 
 Commits:
 
-- `outbox: add publisher service boundary`
-- `outbox: add publishable event payload`
-- `app: wire outbox publisher lifecycle`
-- `test: cover outbox publish handoff`
+- `outbox: rename publisher boundary to relay`
+- `outbox: add dispatcher event payload`
+- `app: wire outbox relay lifecycle`
+- `test: cover outbox dispatch handoff`
 
 Outcomes:
 
 - payout execution is no longer coupled to direct PostgreSQL polling
-- the codebase has a stable seam for RabbitMQ publishing
+- the codebase has a stable dispatcher seam for RabbitMQ publishing
 
 ### PR-05 RabbitMQ Payout Worker
 
@@ -198,7 +198,7 @@ Commits:
 
 Outcomes:
 
-- outbox publisher emits payout jobs to RabbitMQ
+- outbox relay dispatches payout jobs through RabbitMQ
 - payout worker consumes jobs independently from the API process
 - the system matches the intended distributed processing model
 

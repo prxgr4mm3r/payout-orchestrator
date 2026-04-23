@@ -25,7 +25,7 @@ func NewDBTxRunner(beginner txBeginner, queries *db.Queries) *DBTxRunner {
 	}
 }
 
-func (r *DBTxRunner) WithinTx(ctx context.Context, fn func(store Store) error) error {
+func (r *DBTxRunner) WithinTx(ctx context.Context, fn func(store EventStore) error) error {
 	if r == nil || r.beginner == nil || r.queries == nil {
 		return errors.New("outbox transaction runner is not configured")
 	}

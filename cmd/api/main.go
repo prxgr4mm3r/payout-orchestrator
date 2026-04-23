@@ -57,9 +57,9 @@ func main() {
 	clientsHandler := &handlers.ClientsHandler{}
 	fundingSourcesHandler := handlers.NewFundingSourcesHandler(fundingSourcesSvc)
 	payoutsHandler := handlers.NewPayoutsHandler(payoutsSvc)
-	payoutProcessor := outbox.NewPublisher(
+	outboxRelay := outbox.NewRelay(
 		outbox.NewDBTxRunner(dbPool, queries),
-		outbox.NewInlinePublisher(processor.NewExecutionHandler(
+		outbox.NewInlineDispatcher(processor.NewExecutionHandler(
 			processor.NewDBTxRunner(dbPool, queries),
 			providersimulator.New(providersimulator.Config{}),
 			log.Default(),
@@ -83,7 +83,7 @@ func main() {
 
 	var runProcessor func(context.Context) error
 	if processorEnabled {
-		runProcessor = payoutProcessor.Run
+		runProcessor = outboxRelay.Run
 		log.Printf("background processor is enabled interval=%s claim_timeout=%s", pollInterval, claimTimeout)
 	} else {
 		log.Println("background processor is disabled")
