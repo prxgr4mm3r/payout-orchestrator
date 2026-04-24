@@ -21,6 +21,7 @@ import (
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/outbox"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/platform/postgres"
+	platformrabbitmq "github.com/prxgr4mm3r/payout-orchestrator/internal/platform/rabbitmq"
 )
 
 func main() {
@@ -59,9 +60,9 @@ func main() {
 	fundingSourcesHandler := handlers.NewFundingSourcesHandler(fundingSourcesSvc)
 	payoutsHandler := handlers.NewPayoutsHandler(payoutsSvc)
 	var outboxRelay *outbox.Relay
-	var rabbitmqClient *rabbitmqbroker.Client
+	var rabbitmqClient *platformrabbitmq.Client
 	if processorEnabled {
-		rabbitmqClient, err = rabbitmqbroker.Open(rabbitmqURL)
+		rabbitmqClient, err = platformrabbitmq.Open(rabbitmqURL)
 		if err != nil {
 			log.Fatalf("open rabbitmq: %v", err)
 		}

@@ -9,9 +9,10 @@ import (
 	"syscall"
 	"time"
 
-	rabbitmqbroker "github.com/prxgr4mm3r/payout-orchestrator/internal/broker/rabbitmq"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
+	payoutworker "github.com/prxgr4mm3r/payout-orchestrator/internal/payout-worker"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/platform/postgres"
+	platformrabbitmq "github.com/prxgr4mm3r/payout-orchestrator/internal/platform/rabbitmq"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/processor"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/providersimulator"
 )
@@ -30,7 +31,7 @@ func main() {
 	}
 	defer dbPool.Close()
 
-	rabbitmqClient, err := rabbitmqbroker.Open(rabbitmqURL)
+	rabbitmqClient, err := platformrabbitmq.Open(rabbitmqURL)
 	if err != nil {
 		log.Fatalf("open rabbitmq: %v", err)
 	}
@@ -41,7 +42,7 @@ func main() {
 	}
 
 	queries := db.New(dbPool)
-	worker := rabbitmqbroker.NewPayoutWorker(
+	worker := payoutworker.New(
 		rabbitmqClient,
 		processor.NewExecutionHandler(
 			processor.NewDBTxRunner(dbPool, queries),

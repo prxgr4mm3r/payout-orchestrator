@@ -400,6 +400,6 @@ While implementing this roadmap:
 - do not postpone verification until the end of the roadmap
 - prefer stable seams over broad refactors
 - prefer one working worker flow over multiple partially wired services
-- do not place payout or webhook worker orchestration logic inside `internal/platform/rabbitmq`
+- do not place payout or webhook worker orchestration logic inside RabbitMQ transport or broker adapter packages
 
 This plan should be treated as the default path from MVP to `v1` unless the target design itself changes.

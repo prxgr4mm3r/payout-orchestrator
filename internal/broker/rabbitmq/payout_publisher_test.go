@@ -33,7 +33,7 @@ func TestPayoutPublisherDispatchesOutboxEvent(t *testing.T) {
 				t.Fatalf("expected queue payout.jobs, got %s", queue)
 			}
 
-			got, err := decodePayoutJob(body)
+			got, err := DecodePayoutJob(body)
 			if err != nil {
 				t.Fatalf("decode payout job: %v", err)
 			}

@@ -39,12 +39,7 @@ func (p *PayoutPublisher) Dispatch(ctx context.Context, event outbox.Event) erro
 		return errors.New("rabbitmq payout queue name is required")
 	}
 
-	body, err := json.Marshal(payoutJobMessage{
-		ID:        event.ID,
-		EventType: event.EventType,
-		EntityID:  event.EntityID,
-		Payload:   event.Payload,
-	})
+	body, err := EncodePayoutJob(event)
 	if err != nil {
 		return err
 	}
@@ -52,7 +47,16 @@ func (p *PayoutPublisher) Dispatch(ctx context.Context, event outbox.Event) erro
 	return p.publisher.Publish(ctx, p.queueName, body)
 }
 
-func decodePayoutJob(raw []byte) (outbox.Event, error) {
+func EncodePayoutJob(event outbox.Event) ([]byte, error) {
+	return json.Marshal(payoutJobMessage{
+		ID:        event.ID,
+		EventType: event.EventType,
+		EntityID:  event.EntityID,
+		Payload:   event.Payload,
+	})
+}
+
+func DecodePayoutJob(raw []byte) (outbox.Event, error) {
 	var message payoutJobMessage
 	if err := json.Unmarshal(raw, &message); err != nil {
 		return outbox.Event{}, err

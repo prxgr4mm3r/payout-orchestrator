@@ -1,36 +1,32 @@
-package rabbitmq
+package payoutworker
 
 import (
 	"context"
 	"errors"
 	"log"
 
+	rabbitmqbroker "github.com/prxgr4mm3r/payout-orchestrator/internal/broker/rabbitmq"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/outbox"
+	platformrabbitmq "github.com/prxgr4mm3r/payout-orchestrator/internal/platform/rabbitmq"
 )
 
-type messageDelivery interface {
-	Body() []byte
-	Ack() error
-	Nack(requeue bool) error
-}
-
 type messageConsumer interface {
-	Consume(ctx context.Context, queue string, handler func(context.Context, Delivery) error) error
+	Consume(ctx context.Context, queue string, handler func(context.Context, platformrabbitmq.Delivery) error) error
 }
 
-type PayoutWorker struct {
+type Worker struct {
 	consumer  messageConsumer
 	handler   outbox.EventHandler
 	queueName string
 	logger    *log.Logger
 }
 
-func NewPayoutWorker(consumer messageConsumer, handler outbox.EventHandler, queueName string, logger *log.Logger) *PayoutWorker {
+func New(consumer messageConsumer, handler outbox.EventHandler, queueName string, logger *log.Logger) *Worker {
 	if logger == nil {
 		logger = log.Default()
 	}
 
-	return &PayoutWorker{
+	return &Worker{
 		consumer:  consumer,
 		handler:   handler,
 		queueName: queueName,
@@ -38,19 +34,19 @@ func NewPayoutWorker(consumer messageConsumer, handler outbox.EventHandler, queu
 	}
 }
 
-func (w *PayoutWorker) Run(ctx context.Context) error {
+func (w *Worker) Run(ctx context.Context) error {
 	if w == nil || w.consumer == nil || w.handler == nil {
-		return errors.New("rabbitmq payout worker is not configured")
+		return errors.New("payout worker is not configured")
 	}
 	if w.queueName == "" {
-		return errors.New("rabbitmq payout queue name is required")
+		return errors.New("payout worker queue name is required")
 	}
 
 	return w.consumer.Consume(ctx, w.queueName, w.handleDelivery)
 }
 
-func (w *PayoutWorker) handleDelivery(ctx context.Context, delivery Delivery) error {
-	event, err := decodePayoutJob(delivery.Body())
+func (w *Worker) handleDelivery(ctx context.Context, delivery platformrabbitmq.Delivery) error {
+	event, err := rabbitmqbroker.DecodePayoutJob(delivery.Body())
 	if err != nil {
 		if nackErr := delivery.Nack(false); nackErr != nil {
 			return nackErr

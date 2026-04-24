@@ -316,8 +316,8 @@ Responsibilities:
 - create webhook outbox/job if needed
 
 Layer ownership:
-- payout worker orchestration belongs to worker/use-case packages
-- worker code must not live inside `internal/platform/rabbitmq`
+- payout worker orchestration belongs to `internal/payout-worker`
+- worker code must not live inside RabbitMQ transport or broker adapter packages
 - transport adapter is injected into worker through narrow interfaces
 
 ### 9.4 Webhook Worker
@@ -902,13 +902,11 @@ Suggested structure:
 /internal
   /api
   /outbox
-  /worker
-    /payout
-    /webhook
-    /recovery
+  /payout-worker
+  /webhook-worker
+  /recovery
   /broker
-    /payout
-    /webhook
+    /rabbitmq
   /providersimulator
   /domain
   /platform
@@ -932,7 +930,7 @@ Use service-specific packages plus shared domain/platform packages.
 Messaging dependency direction:
 - `internal/platform/rabbitmq`: AMQP transport adapter only (dial, channel, queue/exchange declaration, publish/consume primitives)
 - `internal/broker/*`: message contracts and broker-facing adapters for concrete workflows
-- `internal/worker/*` and `internal/outbox`: payout/webhook/recovery orchestration and business-safe flow control
+- `internal/payout-worker`, future worker packages, and `internal/outbox`: payout/webhook/recovery orchestration and business-safe flow control
 - `cmd/*`: runtime wiring of platform adapters into broker/worker/outbox services
 
 ---

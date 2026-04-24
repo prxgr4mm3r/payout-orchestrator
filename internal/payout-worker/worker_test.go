@@ -1,4 +1,4 @@
-package rabbitmq
+package payoutworker
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/outbox"
+	platformrabbitmq "github.com/prxgr4mm3r/payout-orchestrator/internal/platform/rabbitmq"
 )
 
 type fakeDelivery struct {
@@ -31,10 +32,10 @@ func (d *fakeDelivery) Nack(requeue bool) error {
 }
 
 type fakeConsumer struct {
-	consume func(ctx context.Context, queue string, handler func(context.Context, Delivery) error) error
+	consume func(ctx context.Context, queue string, handler func(context.Context, platformrabbitmq.Delivery) error) error
 }
 
-func (f fakeConsumer) Consume(ctx context.Context, queue string, handler func(context.Context, Delivery) error) error {
+func (f fakeConsumer) Consume(ctx context.Context, queue string, handler func(context.Context, platformrabbitmq.Delivery) error) error {
 	return f.consume(ctx, queue, handler)
 }
 
@@ -53,8 +54,8 @@ func TestPayoutWorkerAckOnSuccess(t *testing.T) {
 	delivery := &fakeDelivery{body: body}
 	handled := false
 
-	worker := NewPayoutWorker(fakeConsumer{
-		consume: func(ctx context.Context, queue string, handler func(context.Context, Delivery) error) error {
+	worker := New(fakeConsumer{
+		consume: func(ctx context.Context, queue string, handler func(context.Context, platformrabbitmq.Delivery) error) error {
 			if queue != "payout.jobs" {
 				t.Fatalf("expected queue payout.jobs, got %s", queue)
 			}
@@ -94,8 +95,8 @@ func TestPayoutWorkerNackRequeueOnHandlerError(t *testing.T) {
 	delivery := &fakeDelivery{body: body}
 	expectedErr := errors.New("execute payout")
 
-	worker := NewPayoutWorker(fakeConsumer{
-		consume: func(ctx context.Context, _ string, handler func(context.Context, Delivery) error) error {
+	worker := New(fakeConsumer{
+		consume: func(ctx context.Context, _ string, handler func(context.Context, platformrabbitmq.Delivery) error) error {
 			return handler(ctx, delivery)
 		},
 	}, fakeHandler{
@@ -120,8 +121,8 @@ func TestPayoutWorkerNackWithoutRequeueOnMalformedMessage(t *testing.T) {
 
 	delivery := &fakeDelivery{body: []byte("not-json")}
 
-	worker := NewPayoutWorker(fakeConsumer{
-		consume: func(ctx context.Context, _ string, handler func(context.Context, Delivery) error) error {
+	worker := New(fakeConsumer{
+		consume: func(ctx context.Context, _ string, handler func(context.Context, platformrabbitmq.Delivery) error) error {
 			return handler(ctx, delivery)
 		},
 	}, fakeHandler{
