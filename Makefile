@@ -20,3 +20,6 @@ sqlc:
 
 run-api:
 	go run ./cmd/api
+
+run-payout-worker:
+	go run ./cmd/payout-worker
