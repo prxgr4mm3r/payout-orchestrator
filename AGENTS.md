@@ -30,3 +30,17 @@ After implementation, Codex should report:
 - changed files
 - verification commands that were run
 - suggested commit split, when useful
+
+## Architecture Documentation
+
+When an implementation changes system architecture, service boundaries,
+runtime topology, persistence ownership, messaging flow, or other design-level
+behavior, Codex must update the system design documentation in the same change.
+
+The update must keep both parts synchronized:
+
+- textual design description
+- architecture diagrams, including Mermaid diagrams when the affected concept is
+  represented visually
+
+An architecture change is incomplete if the prose and diagrams disagree.
