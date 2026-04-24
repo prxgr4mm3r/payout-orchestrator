@@ -67,6 +67,22 @@ This system abstracts those concerns behind a single API and a controlled intern
 
 ---
 
+## 3.1 Design Documentation Maintenance
+
+This document is the source of truth for the intended architecture.
+
+When the architecture changes, the same change must update both:
+- the textual description of the affected design
+- the diagrams that represent that design
+
+This applies to service boundaries, runtime instance types, database ownership,
+messaging topology, persistence flows, retry/recovery behavior, and externally
+visible API behavior.
+
+If prose and diagrams disagree, the design update is incomplete.
+
+---
+
 ## 4. Core Business Concept
 
 A payout is a transfer initiated by a client business to one of its end users.
@@ -140,7 +156,15 @@ Responsibilities:
 - record delivery attempts
 - support retry-ready flow
 
-### 5.7 Provider Simulator
+### 5.7 Payout Recovery Service
+Internal service.
+
+Responsibilities:
+- detect payouts stuck in `processing`
+- reconcile stale processing state into `awaiting_retry` or terminal `failed`
+- support safe replay for uncertain execution outcomes
+
+### 5.8 Provider Simulator
 External execution service used in v1.
 
 Responsibilities:
@@ -276,6 +300,11 @@ Why it exists:
 - solves the gap between DB commit and broker publication
 - allows accepting payouts even if RabbitMQ is temporarily unavailable
 
+Layer ownership:
+- outbox publisher workflow belongs to application/service layer
+- RabbitMQ connection/channel/publish/consume primitives belong to `internal/platform/rabbitmq`
+- application services depend on transport interfaces, not AMQP concrete types
+
 ### 9.3 Payout Worker
 Responsibilities:
 - consume payout messages from RabbitMQ
@@ -286,6 +315,11 @@ Responsibilities:
 - write raw technical payloads to MongoDB
 - create webhook outbox/job if needed
 
+Layer ownership:
+- payout worker orchestration belongs to worker/use-case packages
+- worker code must not live inside `internal/platform/rabbitmq`
+- transport adapter is injected into worker through narrow interfaces
+
 ### 9.4 Webhook Worker
 Responsibilities:
 - consume webhook jobs
@@ -293,7 +327,18 @@ Responsibilities:
 - store delivery attempts
 - later support retry and DLQ strategy
 
-### 9.5 Provider Simulator
+### 9.5 Payout Recovery Service
+Responsibilities:
+- scan payouts stuck in `processing` beyond a configured timeout
+- recover stuck payouts into a retryable state (`awaiting_retry`) or a terminal failure state
+- keep recovery actions idempotent and observable
+
+Supported flows:
+- worker crash after moving payout to `processing` but before persisting final status
+- publish/consume races where message delivery and DB state become temporarily inconsistent
+- controlled replay when provider result is unknown and requires safe re-drive
+
+### 9.6 Provider Simulator
 Responsibilities:
 - accept payout instructions
 - emulate external provider execution
@@ -433,6 +478,20 @@ Fields:
 - created_at
 - updated_at
 
+### 12.7 PayoutExecutionAttempt
+Represents execution and retry metadata for payout worker processing.
+
+Fields:
+- payout_id
+- attempt_count
+- last_error_code
+- last_error_message
+- next_retry_at
+- locked_by
+- locked_at
+- created_at
+- updated_at
+
 ---
 
 ## 13. Payout Lifecycle
@@ -440,13 +499,21 @@ Fields:
 Main payout statuses:
 - `pending`
 - `processing`
+- `awaiting_retry`
 - `succeeded`
 - `failed`
 
 Transitions:
 - `pending -> processing`
+- `processing -> awaiting_retry`
+- `awaiting_retry -> processing`
 - `processing -> succeeded`
 - `processing -> failed`
+- `awaiting_retry -> failed`
+
+Worker execution gate:
+- payout execution is allowed only when status is `pending` or `awaiting_retry`
+- `processing` is treated as an in-flight lock state, not as a retry entry point
 
 The status model must prevent invalid transitions.
 
@@ -572,15 +639,21 @@ Mitigation:
 - RabbitMQ redelivery via ack/nack behavior
 - worker must be idempotent enough to avoid duplicate execution effects
 
-### 18.3 Duplicate client request
+### 18.3 Payout stuck in `processing` after worker failure
+Mitigation:
+- recovery service periodically scans and reconciles stale `processing` records
+- stale records are moved to `awaiting_retry` (or `failed` if retry budget is exhausted)
+- reconciliation writes technical facts into payout execution attempt metadata
+
+### 18.4 Duplicate client request
 Mitigation:
 - API-level idempotency using dedicated table
 
-### 18.4 Funding source belongs to another client
+### 18.5 Funding source belongs to another client
 Mitigation:
 - API validates `funding_source.client_id == authenticated_client_id`
 
-### 18.5 Provider returns failure
+### 18.6 Provider returns failure
 Mitigation:
 - payout moves to `failed`
 - raw provider response stored for audit
@@ -589,6 +662,199 @@ Mitigation:
 ---
 
 ## 19. Repository and Code Architecture
+
+### Architecture diagram
+
+The diagrams in this section describe runtime architecture first, and database
+entities separately. API, payout worker, RabbitMQ, and PostgreSQL are instance
+types; `clients`, `payouts`, and `outbox_events` are PostgreSQL tables owned by
+the database instance.
+
+#### Runtime instance types
+
+```mermaid
+flowchart LR
+    ClientSystem[Client system]
+
+    subgraph APIInstances[API service instances]
+        API1[API instance]
+        API2[API instance]
+    end
+
+    subgraph OutboxPublishers[Outbox publisher instances]
+        Relay1[Outbox relay]
+        Relay2[Outbox relay]
+    end
+
+    subgraph PayoutWorkers[Payout worker instances]
+        Worker1[Payout worker]
+        Worker2[Payout worker]
+    end
+
+    Postgres[(PostgreSQL source of truth)]
+    Rabbit[(RabbitMQ broker)]
+    Provider[Provider simulator]
+    WebhookTarget[Client webhook endpoint]
+
+    ClientSystem -->|HTTP API| API1
+    ClientSystem -->|HTTP API| API2
+    API1 -->|SQL transactions| Postgres
+    API2 -->|SQL transactions| Postgres
+    Relay1 -->|claim outbox rows| Postgres
+    Relay2 -->|claim outbox rows| Postgres
+    Relay1 -->|publish payout jobs| Rabbit
+    Relay2 -->|publish payout jobs| Rabbit
+    Rabbit -->|deliver payout jobs| Worker1
+    Rabbit -->|deliver payout jobs| Worker2
+    Worker1 -->|load and update payouts| Postgres
+    Worker2 -->|load and update payouts| Postgres
+    Worker1 -->|execute payout| Provider
+    Worker2 -->|execute payout| Provider
+    Worker1 -. future webhook job .-> WebhookTarget
+    Worker2 -. future webhook job .-> WebhookTarget
+```
+
+#### API instance architecture
+
+```mermaid
+flowchart TB
+    Client[Client system]
+    Router[net/http ServeMux]
+    Auth[API key middleware]
+
+    subgraph Handlers[HTTP handlers]
+        ClientsHandler[ClientsHandler]
+        FundingSourcesHandler[FundingSourcesHandler]
+        PayoutsHandler[PayoutsHandler]
+    end
+
+    subgraph Services[Application services]
+        AuthService[auth.Service]
+        FundingSourcesService[fundingsources.Service]
+        PayoutsService[payouts.Service]
+    end
+
+    TxRunner[DB transaction runner]
+    Queries[sqlc Queries]
+    Postgres[(PostgreSQL source of truth)]
+
+    Client -->|HTTP request| Router
+    Router --> Auth
+    Auth -->|lookup active client| AuthService
+    AuthService --> Queries
+    Auth --> ClientsHandler
+    Auth --> FundingSourcesHandler
+    Auth --> PayoutsHandler
+    FundingSourcesHandler --> FundingSourcesService
+    PayoutsHandler --> PayoutsService
+    FundingSourcesService --> Queries
+    PayoutsService -->|create payout idempotently| TxRunner
+    TxRunner -->|insert payout, idempotency key, outbox event| Queries
+    Queries -->|SQL reads and writes| Postgres
+```
+
+#### RabbitMQ topology
+
+```mermaid
+flowchart LR
+    OutboxRelay[Outbox relay]
+    DefaultExchange[Default direct exchange]
+    PayoutQueue[[Durable queue: payout.jobs]]
+
+    subgraph Consumers[Payout worker consumers]
+        WorkerA[Payout worker A]
+        WorkerB[Payout worker B]
+    end
+
+    OutboxRelay -->|persistent JSON message routing_key=payout.jobs| DefaultExchange
+    DefaultExchange --> PayoutQueue
+    PayoutQueue -->|manual delivery| WorkerA
+    PayoutQueue -->|manual delivery| WorkerB
+    WorkerA -->|Ack on success| PayoutQueue
+    WorkerA -->|Nack requeue on handler error| PayoutQueue
+    WorkerB -->|Ack on success| PayoutQueue
+    WorkerB -->|Nack requeue on handler error| PayoutQueue
+```
+
+#### PostgreSQL schema
+
+```mermaid
+erDiagram
+    CLIENTS ||--o{ FUNDING_SOURCES : owns
+    CLIENTS ||--o{ PAYOUTS : creates
+    FUNDING_SOURCES ||--o{ PAYOUTS : funds
+    CLIENTS ||--o{ IDEMPOTENCY_KEYS : scopes
+    PAYOUTS ||--o{ IDEMPOTENCY_KEYS : resolves
+    PAYOUTS ||--o{ OUTBOX_EVENTS : emits
+    CLIENTS ||--o{ WEBHOOK_DELIVERIES : receives
+    PAYOUTS ||--o{ WEBHOOK_DELIVERIES : notifies
+
+    CLIENTS {
+        uuid id PK
+        varchar name
+        uuid api_key UK
+        text webhook_url
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    FUNDING_SOURCES {
+        uuid id PK
+        uuid client_id FK
+        varchar name
+        varchar type
+        varchar payment_account_id
+        varchar status
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    PAYOUTS {
+        uuid id PK
+        uuid client_id FK
+        uuid funding_source_id FK
+        numeric amount
+        varchar currency
+        varchar status
+        text failure_reason
+        varchar external_id
+        varchar recipient_name
+        varchar recipient_account_id
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    IDEMPOTENCY_KEYS {
+        text key PK
+        uuid client_id PK,FK
+        text request_hash
+        uuid payout_id FK
+        timestamptz created_at
+    }
+
+    OUTBOX_EVENTS {
+        uuid id PK
+        varchar event_type
+        uuid entity_id FK
+        jsonb payload
+        varchar status
+        timestamptz claimed_at
+        timestamptz created_at
+        timestamptz processed_at
+    }
+
+    WEBHOOK_DELIVERIES {
+        uuid id PK
+        uuid payout_id FK
+        uuid client_id FK
+        text target_url
+        jsonb payload
+        varchar status
+        integer attempt_count
+        timestamptz created_at
+        timestamptz updated_at
+    }
+```
 
 ### Language and runtime
 - Go
@@ -635,9 +901,14 @@ Suggested structure:
 
 /internal
   /api
-  /outboxpublisher
-  /payoutworker
-  /webhookworker
+  /outbox
+  /worker
+    /payout
+    /webhook
+    /recovery
+  /broker
+    /payout
+    /webhook
   /providersimulator
   /domain
   /platform
@@ -657,6 +928,12 @@ Suggested structure:
 
 Avoid one giant undifferentiated `internal` package.
 Use service-specific packages plus shared domain/platform packages.
+
+Messaging dependency direction:
+- `internal/platform/rabbitmq`: AMQP transport adapter only (dial, channel, queue/exchange declaration, publish/consume primitives)
+- `internal/broker/*`: message contracts and broker-facing adapters for concrete workflows
+- `internal/worker/*` and `internal/outbox`: payout/webhook/recovery orchestration and business-safe flow control
+- `cmd/*`: runtime wiring of platform adapters into broker/worker/outbox services
 
 ---
 
@@ -811,6 +1088,11 @@ Potential v2 improvements:
 - metrics and tracing
 - admin/support API
 - dashboard UI
+
+Implementation TODOs tracked in this design:
+- TODO: implement payout execution attempt persistence in PostgreSQL (`attempt_count`, `last_error`, `next_retry_at`, lock metadata)
+- TODO: implement `awaiting_retry` status in runtime validation and transition logic
+- TODO: implement payout recovery service runtime and runbook with stuck-processing reconciliation rules
 
 ---
 

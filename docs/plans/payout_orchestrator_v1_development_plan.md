@@ -73,7 +73,7 @@ Commit naming:
 
 - `test: fix smoke test processor wiring`
 - `payouts: add recipient fields`
-- `broker: add rabbitmq payout consumer`
+- `platform: add rabbitmq consumer adapter`
 
 PR naming:
 
@@ -207,8 +207,8 @@ Goal:
 
 Commits:
 
-- `broker: add rabbitmq payout publisher`
-- `broker: add rabbitmq payout consumer`
+- `platform: add rabbitmq transport adapter`
+- `broker: add payout queue publish and consume boundaries`
 - `worker: execute payout jobs from queue`
 - `app: add worker runtime wiring`
 - `test: cover queued payout execution`
@@ -217,7 +217,46 @@ Outcomes:
 
 - outbox relay dispatches payout jobs through RabbitMQ
 - payout worker consumes jobs independently from the API process
+- payout worker orchestration is kept outside transport adapter packages
 - the system matches the intended distributed processing model
+
+### PR-05b RabbitMQ Delivery Guarantees
+
+Goal:
+
+- make payout job delivery through RabbitMQ operationally safe and explicit
+
+Commits:
+
+- `platform: add payout exchange and queue topology`
+- `platform: enable publisher confirms for payout publishing`
+- `platform: declare durable payout and retry queues`
+- `platform: publish payout jobs in persistent mode`
+- `docs: add rabbitmq payout topology diagram`
+
+Outcomes:
+
+- payout publication has broker-level confirmation semantics
+- payout queue topology is durable and reviewable
+- the expected exchange/queue/binding behavior is documented before retry orchestration
+
+### PR-05c Idempotency Schema Consistency
+
+Goal:
+
+- make the database schema express that one payout creation request resolves to one payout
+
+Commits:
+
+- `db: enforce one idempotency key per payout`
+- `test: cover idempotency payout uniqueness`
+- `docs: align idempotency schema cardinality`
+
+Outcomes:
+
+- `idempotency_keys.payout_id` is unique
+- the ERD shows `payouts` to `idempotency_keys` as `1 -> 0..1`
+- duplicate idempotency aliases for the same payout are rejected at the database boundary
 
 ### PR-06 Webhook Job Emission
 
@@ -258,11 +297,14 @@ Outcomes:
 
 Goal:
 
-- add failure handling rules that make workers operationally useful
+- add failure handling rules that make payout and webhook workers operationally useful
 
 Commits:
 
-- `db: add delivery attempt metadata`
+- `db: add payout execution attempt metadata`
+- `db: add payout awaiting retry status`
+- `broker: add payout retry and dead letter queue topology`
+- `worker: add payout consumer failure routing`
 - `worker: add webhook retry scheduling`
 - `worker: add payout retry policy`
 - `test: cover retry exhaustion`
@@ -270,11 +312,32 @@ Commits:
 
 Outcomes:
 
-- transient failures can be retried with controlled policy
-- terminal failures become explicit instead of accidental
+- transient failures can be retried with controlled backoff tiers
+- exhausted payout jobs move to DLQ instead of looping indefinitely
+- payout retry accounting is persisted and inspectable in PostgreSQL
 - the system becomes retry-ready in practice, not only in design
 
-### PR-09 Audit Trail
+### PR-09 Recovery And Provider Idempotency
+
+Goal:
+
+- prevent stuck processing and duplicate external payout side effects
+
+Commits:
+
+- `worker: gate payout execution by pending and awaiting retry statuses`
+- `provider: add idempotent payout execution contract`
+- `recovery: add stuck processing reconciler service`
+- `test: cover payout recovery and idempotent provider replay`
+- `docs: add payout recovery behavior notes`
+
+Outcomes:
+
+- payouts stuck in `processing` can be recovered automatically
+- payout execution remains safe across redeliveries and worker restarts
+- provider-side duplicate payout risk is explicitly controlled
+
+### PR-10 Audit Trail
 
 Goal:
 
@@ -292,7 +355,7 @@ Outcomes:
 - payout execution and webhook outcomes are traceable after the fact
 - support/debugging no longer depends only on transient logs
 
-### PR-10 Observability And Runbook
+### PR-11 Observability And Runbook
 
 Goal:
 
@@ -319,10 +382,12 @@ Development should move in this order:
 
 1. `PR-01` to restore a clean baseline.
 2. `PR-02` and `PR-03` to complete the core product data model.
-3. `PR-04` and `PR-05` to move from PostgreSQL-only polling to RabbitMQ-based payout execution.
-4. `PR-06` and `PR-07` to add webhook delivery as an async workflow.
-5. `PR-08` to make failures and retries explicit.
-6. `PR-09` and `PR-10` to improve investigation and operations.
+3. `PR-04`, `PR-05`, and `PR-05b` to move from PostgreSQL-only polling to RabbitMQ-based payout execution with delivery guarantees.
+4. `PR-05c` to tighten idempotency schema consistency before adding more async workflows.
+5. `PR-06` and `PR-07` to add webhook delivery as an async workflow.
+6. `PR-08` to make failures, retries, and DLQ behavior explicit.
+7. `PR-09` to add payout recovery and provider idempotency protections.
+8. `PR-10` and `PR-11` to improve investigation and operations.
 
 ---
 
@@ -335,5 +400,6 @@ While implementing this roadmap:
 - do not postpone verification until the end of the roadmap
 - prefer stable seams over broad refactors
 - prefer one working worker flow over multiple partially wired services
+- do not place payout or webhook worker orchestration logic inside `internal/platform/rabbitmq`
 
 This plan should be treated as the default path from MVP to `v1` unless the target design itself changes.
