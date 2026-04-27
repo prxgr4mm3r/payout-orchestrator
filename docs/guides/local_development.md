@@ -21,6 +21,7 @@ make run-api
 The API now requires a reachable PostgreSQL instance on startup. If `DB_URL` is missing or points to an unavailable database, the process exits immediately.
 
 When `PROCESSOR_ENABLED=true`, the API also requires `RABBITMQ_URL` and publishes payout jobs to `PAYOUT_QUEUE_NAME` (default: `payout.jobs`).
+It also publishes webhook jobs to `WEBHOOK_QUEUE_NAME` (default: `webhook.deliveries`).
 
 ## Start the payout worker
 
@@ -33,6 +34,18 @@ The payout worker requires:
 - `DB_URL`
 - `RABBITMQ_URL`
 - optional `PAYOUT_QUEUE_NAME` (default: `payout.jobs`)
+
+## Start the webhook worker
+
+```bash
+make run-webhook-worker
+```
+
+The webhook worker requires:
+
+- `DB_URL`
+- `RABBITMQ_URL`
+- optional `WEBHOOK_QUEUE_NAME` (default: `webhook.deliveries`)
 
 ## Check health
 

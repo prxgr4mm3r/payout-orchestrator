@@ -23,3 +23,6 @@ run-api:
 
 run-payout-worker:
 	go run ./cmd/payout-worker
+
+run-webhook-worker:
+	go run ./cmd/webhook-worker
