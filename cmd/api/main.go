@@ -69,11 +69,7 @@ func main() {
 		defer rabbitmqClient.Close()
 
 		payoutTopology := rabbitmqbroker.NewPayoutTopology(payoutQueueName)
-		if err := rabbitmqClient.EnsureTopology(platformrabbitmq.Topology{
-			ExchangeName: payoutTopology.ExchangeName,
-			QueueName:    payoutTopology.QueueName,
-			RoutingKey:   payoutTopology.RoutingKey,
-		}); err != nil {
+		if err := rabbitmqClient.EnsureTopology(payoutTopology); err != nil {
 			log.Fatalf("ensure payout topology: %v", err)
 		}
 

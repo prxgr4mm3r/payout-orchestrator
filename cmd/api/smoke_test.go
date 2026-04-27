@@ -233,11 +233,7 @@ func TestRabbitMQPayoutWorkerSmoke(t *testing.T) {
 	})
 
 	payoutTopology := rabbitmqbroker.NewPayoutTopology(queueName)
-	if err := publisherClient.EnsureTopology(platformrabbitmq.Topology{
-		ExchangeName: payoutTopology.ExchangeName,
-		QueueName:    payoutTopology.QueueName,
-		RoutingKey:   payoutTopology.RoutingKey,
-	}); err != nil {
+	if err := publisherClient.EnsureTopology(payoutTopology); err != nil {
 		t.Fatalf("ensure payout topology: %v", err)
 	}
 	t.Cleanup(func() {

@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/outbox"
+	platformrabbitmq "github.com/prxgr4mm3r/payout-orchestrator/internal/platform/rabbitmq"
 )
 
 type messagePublisher interface {
@@ -24,12 +25,6 @@ type payoutJobMessage struct {
 	Payload   []byte `json:"payload"`
 }
 
-type PayoutTopology struct {
-	ExchangeName string
-	QueueName    string
-	RoutingKey   string
-}
-
 type PayoutPublisher struct {
 	publisher    messagePublisher
 	exchangeName string
@@ -44,8 +39,8 @@ func NewPayoutPublisher(publisher messagePublisher, exchangeName, routingKey str
 	}
 }
 
-func NewPayoutTopology(queueName string) PayoutTopology {
-	return PayoutTopology{
+func NewPayoutTopology(queueName string) platformrabbitmq.Topology {
+	return platformrabbitmq.Topology{
 		ExchangeName: PayoutExchangeName,
 		QueueName:    queueName,
 		RoutingKey:   PayoutRoutingKey,
