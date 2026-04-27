@@ -20,3 +20,19 @@ SELECT *
 FROM webhook_deliveries
 WHERE payout_id = $1
 ORDER BY created_at DESC, id DESC;
+
+-- name: MarkWebhookDeliveryDelivered :one
+UPDATE webhook_deliveries
+SET status = 'delivered',
+    attempt_count = attempt_count + 1,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: MarkWebhookDeliveryFailed :one
+UPDATE webhook_deliveries
+SET status = 'failed',
+    attempt_count = attempt_count + 1,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING *;
