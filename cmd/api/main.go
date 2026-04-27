@@ -80,6 +80,7 @@ func main() {
 			outbox.Config{
 				PollInterval: pollInterval,
 				ClaimTimeout: claimTimeout,
+				EventTypes:   []string{outbox.EventTypeProcessPayout},
 			},
 		)
 	}

@@ -20,6 +20,26 @@ FROM next_event
 WHERE events.id = next_event.id
 RETURNING events.*;
 
+-- name: ClaimNextPendingOutboxEventByTypes :one
+WITH next_event AS (
+    SELECT id
+    FROM outbox_events
+    WHERE event_type = ANY(sqlc.arg(event_types)::text[])
+      AND (
+        status = 'pending'
+        OR (status = 'processing' AND outbox_events.claimed_at < sqlc.arg(reclaim_before))
+      )
+    ORDER BY created_at ASC
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE outbox_events AS events
+SET status = 'processing',
+    claimed_at = NOW()
+FROM next_event
+WHERE events.id = next_event.id
+RETURNING events.*;
+
 -- name: GetPendingOutboxEvents :many
 SELECT * FROM outbox_events WHERE status = 'pending' ORDER BY created_at ASC;
 

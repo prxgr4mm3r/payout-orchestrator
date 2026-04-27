@@ -174,7 +174,7 @@ func (h *Handler) recordExecutionResultInTx(ctx context.Context, store Store, ev
 		if err != nil {
 			return err
 		}
-		if err := createWebhookDeliveryIfConfigured(ctx, store, finalPayout); err != nil {
+		if err := createWebhookOutboxEventIfConfigured(ctx, store, finalPayout); err != nil {
 			return err
 		}
 
@@ -196,7 +196,7 @@ func (h *Handler) recordExecutionResultInTx(ctx context.Context, store Store, ev
 		if err != nil {
 			return err
 		}
-		if err := createWebhookDeliveryIfConfigured(ctx, store, finalPayout); err != nil {
+		if err := createWebhookOutboxEventIfConfigured(ctx, store, finalPayout); err != nil {
 			return err
 		}
 
@@ -213,7 +213,7 @@ func (h *Handler) recordExecutionResultInTx(ctx context.Context, store Store, ev
 	}
 }
 
-func createWebhookDeliveryIfConfigured(ctx context.Context, store Store, payout db.Payout) error {
+func createWebhookOutboxEventIfConfigured(ctx context.Context, store Store, payout db.Payout) error {
 	client, err := store.GetClientById(ctx, payout.ClientID)
 	if err != nil {
 		return err
@@ -227,6 +227,7 @@ func createWebhookDeliveryIfConfigured(ctx context.Context, store Store, payout 
 	payload, err := outbox.MarshalPayoutResultWebhookPayload(
 		payout.ID.String(),
 		payout.ClientID.String(),
+		targetURL,
 		payout.Status,
 		payout.FailureReason.String,
 	)
@@ -234,13 +235,10 @@ func createWebhookDeliveryIfConfigured(ctx context.Context, store Store, payout 
 		return err
 	}
 
-	_, err = store.CreateWebhookDelivery(ctx, db.CreateWebhookDeliveryParams{
-		PayoutID:     payout.ID,
-		ClientID:     payout.ClientID,
-		TargetUrl:    targetURL,
-		Payload:      payload,
-		Status:       "pending",
-		AttemptCount: 0,
+	_, err = store.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
+		EventType: outbox.EventTypePayoutResultWebhook,
+		EntityID:  payout.ID,
+		Payload:   payload,
 	})
 	return err
 }

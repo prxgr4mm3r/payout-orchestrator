@@ -45,6 +45,48 @@ func (q *Queries) ClaimNextPendingOutboxEvent(ctx context.Context, reclaimBefore
 	return i, err
 }
 
+const claimNextPendingOutboxEventByTypes = `-- name: ClaimNextPendingOutboxEventByTypes :one
+WITH next_event AS (
+    SELECT id
+    FROM outbox_events
+    WHERE event_type = ANY($1::text[])
+      AND (
+        status = 'pending'
+        OR (status = 'processing' AND outbox_events.claimed_at < $2)
+      )
+    ORDER BY created_at ASC
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE outbox_events AS events
+SET status = 'processing',
+    claimed_at = NOW()
+FROM next_event
+WHERE events.id = next_event.id
+RETURNING events.id, events.event_type, events.payload, events.status, events.created_at, events.processed_at, events.entity_id, events.claimed_at
+`
+
+type ClaimNextPendingOutboxEventByTypesParams struct {
+	EventTypes    []string
+	ReclaimBefore pgtype.Timestamptz
+}
+
+func (q *Queries) ClaimNextPendingOutboxEventByTypes(ctx context.Context, arg ClaimNextPendingOutboxEventByTypesParams) (OutboxEvent, error) {
+	row := q.db.QueryRow(ctx, claimNextPendingOutboxEventByTypes, arg.EventTypes, arg.ReclaimBefore)
+	var i OutboxEvent
+	err := row.Scan(
+		&i.ID,
+		&i.EventType,
+		&i.Payload,
+		&i.Status,
+		&i.CreatedAt,
+		&i.ProcessedAt,
+		&i.EntityID,
+		&i.ClaimedAt,
+	)
+	return i, err
+}
+
 const createOutboxEvent = `-- name: CreateOutboxEvent :one
 INSERT INTO outbox_events (event_type, entity_id, payload)
 VALUES ($1, $2, $3)
