@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -19,15 +20,19 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/api/handlers"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/api/middleware"
 	authservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/auth"
 	fundingservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/fundingsources"
 	payoutservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/payouts"
+	rabbitmqbroker "github.com/prxgr4mm3r/payout-orchestrator/internal/broker/rabbitmq"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/outbox"
+	payoutworker "github.com/prxgr4mm3r/payout-orchestrator/internal/payout-worker"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/payout-worker/execution"
+	platformrabbitmq "github.com/prxgr4mm3r/payout-orchestrator/internal/platform/rabbitmq"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/providersimulator"
 )
 
@@ -170,6 +175,184 @@ func TestMVPPayoutSmoke(t *testing.T) {
 	}
 }
 
+func TestRabbitMQPayoutWorkerSmoke(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("skipping smoke test in short mode")
+	}
+
+	dbURL := smokeTestDBURL()
+	if dbURL == "" {
+		t.Skip("set PAYOUT_SMOKE_DB_URL or DB_URL to run the smoke test")
+	}
+	rabbitmqURL := smokeTestRabbitMQURL()
+	if rabbitmqURL == "" {
+		t.Skip("set RABBITMQ_URL to run the RabbitMQ smoke test")
+	}
+
+	ctx := context.Background()
+	adminPool := openPool(t, ctx, dbURL)
+	t.Cleanup(adminPool.Close)
+
+	schemaName := fmt.Sprintf("rabbitmq_smoke_%d", time.Now().UnixNano())
+	if _, err := adminPool.Exec(ctx, "CREATE SCHEMA "+schemaName); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := adminPool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+schemaName+" CASCADE"); err != nil {
+			t.Fatalf("drop schema: %v", err)
+		}
+	})
+
+	queueName := fmt.Sprintf("payout.jobs.smoke.%d", time.Now().UnixNano())
+
+	appPool := openPoolWithSearchPath(t, ctx, dbURL, schemaName)
+	t.Cleanup(appPool.Close)
+
+	applyMigrations(t, ctx, appPool)
+
+	publisherClient, err := platformrabbitmq.Open(rabbitmqURL)
+	if err != nil {
+		t.Fatalf("open rabbitmq publisher: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := publisherClient.Close(); err != nil {
+			t.Fatalf("close rabbitmq publisher: %v", err)
+		}
+	})
+
+	consumerClient, err := platformrabbitmq.Open(rabbitmqURL)
+	if err != nil {
+		t.Fatalf("open rabbitmq consumer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := consumerClient.Close(); err != nil {
+			t.Fatalf("close rabbitmq consumer: %v", err)
+		}
+	})
+
+	if err := publisherClient.EnsureQueue(queueName); err != nil {
+		t.Fatalf("ensure payout queue: %v", err)
+	}
+	t.Cleanup(func() {
+		deleteRabbitMQQueue(t, rabbitmqURL, queueName)
+	})
+
+	queries := db.New(appPool)
+	clientID := mustUUID(t, "2c97a4da-38a7-46a8-9205-6482d0cfc6fb")
+	apiKey := mustUUID(t, "32d82e79-43e6-4e1f-8c29-71e5deba7e1d")
+
+	clientRecord, err := queries.CreateClient(ctx, db.CreateClientParams{
+		ID:     clientID,
+		Name:   "rabbitmq-smoke-client",
+		ApiKey: apiKey,
+	})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	logger := log.New(io.Discard, "", 0)
+	worker := payoutworker.New(
+		consumerClient,
+		execution.NewHandler(
+			execution.NewDBTxRunner(appPool, queries),
+			providersimulator.New(providersimulator.Config{}),
+			logger,
+		),
+		queueName,
+		logger,
+	)
+
+	workerCtx, cancelWorker := context.WithCancel(context.Background())
+	workerErrCh := make(chan error, 1)
+	go func() {
+		workerErrCh <- worker.Run(workerCtx)
+	}()
+	t.Cleanup(func() {
+		cancelWorker()
+		if err := <-workerErrCh; err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("stop payout worker: %v", err)
+		}
+	})
+
+	authSvc := authservice.NewService(queries)
+	fundingSourcesSvc := fundingservice.NewService(queries)
+	payoutsSvc := payoutservice.NewServiceWithTx(queries, payoutservice.NewDBTxRunner(appPool, queries))
+	outboxRelay := outbox.NewRelay(
+		outbox.NewDBTxRunner(appPool, queries),
+		rabbitmqbroker.NewPayoutPublisher(publisherClient, queueName),
+		logger,
+		outbox.Config{
+			PollInterval: 10 * time.Millisecond,
+			ClaimTimeout: time.Second,
+		},
+	)
+
+	router := NewRouter(
+		&handlers.ClientsHandler{},
+		handlers.NewFundingSourcesHandler(fundingSourcesSvc),
+		handlers.NewPayoutsHandler(payoutsSvc),
+		middleware.APIKey(authSvc),
+	)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+	})
+
+	server := &http.Server{Handler: router}
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- runApplication(
+			runCtx,
+			server,
+			func() error { return server.Serve(listener) },
+			outboxRelay.Run,
+			5*time.Second,
+			logger,
+		)
+	}()
+	t.Cleanup(func() {
+		cancelRun()
+		if err := <-runErrCh; err != nil {
+			t.Fatalf("stop application: %v", err)
+		}
+	})
+
+	baseURL := "http://" + listener.Addr().String()
+	waitForHealthz(t, baseURL)
+
+	fundingSource := createFundingSourceOverHTTP(t, baseURL, clientRecord.ApiKey.String())
+	payout := createPayoutOverHTTP(t, baseURL, clientRecord.ApiKey.String(), fundingSource.ID)
+	finalPayout := waitForPayoutStatus(t, baseURL, clientRecord.ApiKey.String(), payout.ID, "succeeded")
+
+	if finalPayout.Status != "succeeded" {
+		t.Fatalf("expected final payout status succeeded, got %s", finalPayout.Status)
+	}
+
+	var outboxStatus string
+	var outboxProcessed bool
+	err = appPool.QueryRow(ctx, `
+		SELECT status, processed_at IS NOT NULL
+		FROM outbox_events
+		WHERE entity_id = $1
+	`, mustUUID(t, payout.ID)).Scan(&outboxStatus, &outboxProcessed)
+	if err != nil {
+		t.Fatalf("load outbox event: %v", err)
+	}
+	if outboxStatus != "processed" {
+		t.Fatalf("expected outbox event status processed, got %s", outboxStatus)
+	}
+	if !outboxProcessed {
+		t.Fatal("expected outbox event to have processed_at timestamp")
+	}
+}
+
 type smokeFundingSourceResponse struct {
 	ID string `json:"id"`
 }
@@ -185,6 +368,30 @@ func smokeTestDBURL() string {
 	}
 
 	return strings.TrimSpace(os.Getenv("DB_URL"))
+}
+
+func smokeTestRabbitMQURL() string {
+	return strings.TrimSpace(os.Getenv("RABBITMQ_URL"))
+}
+
+func deleteRabbitMQQueue(t *testing.T, url, queueName string) {
+	t.Helper()
+
+	conn, err := amqp.Dial(url)
+	if err != nil {
+		t.Fatalf("open rabbitmq cleanup connection: %v", err)
+	}
+	defer conn.Close()
+
+	channel, err := conn.Channel()
+	if err != nil {
+		t.Fatalf("open rabbitmq cleanup channel: %v", err)
+	}
+	defer channel.Close()
+
+	if _, err := channel.QueueDelete(queueName, false, false, false); err != nil {
+		t.Fatalf("delete rabbitmq queue: %v", err)
+	}
 }
 
 func openPool(t *testing.T, ctx context.Context, dbURL string) *pgxpool.Pool {
