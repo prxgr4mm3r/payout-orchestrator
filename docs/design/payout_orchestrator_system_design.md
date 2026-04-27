@@ -302,6 +302,8 @@ Why it exists:
 
 Layer ownership:
 - outbox publisher workflow belongs to application/service layer
+- shared outbox contracts, event envelopes, and payload helpers live in `internal/outbox`
+- polling, claiming, publishing, and marking outbox rows belong to the owning outbox publisher runtime service when that service is split out
 - RabbitMQ connection/channel/publish/consume primitives belong to `internal/platform/rabbitmq`
 - application services depend on transport interfaces, not AMQP concrete types
 
@@ -317,8 +319,10 @@ Responsibilities:
 
 Layer ownership:
 - payout worker orchestration belongs to `internal/payout-worker`
+- payout execution application logic belongs to the payout worker service unless another runtime service has a real need to execute payouts directly
 - worker code must not live inside RabbitMQ transport or broker adapter packages
 - transport adapter is injected into worker through narrow interfaces
+- recovery, audit, and API services must not duplicate payout execution ownership; they should enqueue, recover, observe, or expose state instead of calling providers directly
 
 ### 9.4 Webhook Worker
 Responsibilities:
@@ -926,6 +930,21 @@ Suggested structure:
 
 Avoid one giant undifferentiated `internal` package.
 Use service-specific packages plus shared domain/platform packages.
+
+Service package ownership:
+- service-specific orchestration and application services live under the owning runtime package, such as `internal/api`, `internal/payout-worker`, `internal/webhook-worker`, `internal/recovery`, or future `internal/audit`
+- top-level shared packages are reserved for code with more than one real owner, such as domain types, generated database access, broker message contracts, and platform adapters
+- do not promote a package to top-level `internal` only because it is a "service" layer; promote it only when multiple runtime services should depend on it
+- payout execution is owned by `internal/payout-worker`; recovery should restore or requeue work for the payout worker instead of becoming a second payout executor
+
+Shared package rules:
+- `internal/domain` is only for shared business concepts, invariants, value objects, and domain events; it must not contain transport envelopes, persistence runners, RabbitMQ deliveries, HTTP DTOs, or serialized broker payloads
+- `internal/outbox` is for shared transactional outbox contracts, event envelopes, event type constants, and payload serialization helpers; service-owned relay loops should move under `internal/outbox-publisher` when that runtime service exists
+- `internal/broker/*` is for broker message contracts and adapters that translate application events into broker payloads; it must not own queue connections, payout execution, or worker retry policy
+- `internal/platform/*` is for technology adapters such as PostgreSQL, RabbitMQ, Redis, MongoDB, config, and logging; platform packages must not import service packages or domain-specific workflows
+- `internal/db` contains generated database access and query parameter/result types; business rules should not be hidden in generated model usage alone
+- `cmd/*` packages are composition roots: read config, wire dependencies, start processes, and handle shutdown; they must not contain business logic
+- if a package has only one runtime-service owner, keep it under that service until a second real owner appears
 
 Messaging dependency direction:
 - `internal/platform/rabbitmq`: AMQP transport adapter only (dial, channel, queue/exchange declaration, publish/consume primitives)
