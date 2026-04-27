@@ -9,8 +9,13 @@ import (
 )
 
 type messagePublisher interface {
-	Publish(ctx context.Context, queue string, body []byte) error
+	Publish(ctx context.Context, exchange, routingKey string, body []byte) error
 }
+
+const (
+	PayoutExchangeName = "payout.jobs"
+	PayoutRoutingKey   = "payout.process"
+)
 
 type payoutJobMessage struct {
 	ID        string `json:"id"`
@@ -19,15 +24,31 @@ type payoutJobMessage struct {
 	Payload   []byte `json:"payload"`
 }
 
-type PayoutPublisher struct {
-	publisher messagePublisher
-	queueName string
+type PayoutTopology struct {
+	ExchangeName string
+	QueueName    string
+	RoutingKey   string
 }
 
-func NewPayoutPublisher(publisher messagePublisher, queueName string) *PayoutPublisher {
+type PayoutPublisher struct {
+	publisher    messagePublisher
+	exchangeName string
+	routingKey   string
+}
+
+func NewPayoutPublisher(publisher messagePublisher, exchangeName, routingKey string) *PayoutPublisher {
 	return &PayoutPublisher{
-		publisher: publisher,
-		queueName: queueName,
+		publisher:    publisher,
+		exchangeName: exchangeName,
+		routingKey:   routingKey,
+	}
+}
+
+func NewPayoutTopology(queueName string) PayoutTopology {
+	return PayoutTopology{
+		ExchangeName: PayoutExchangeName,
+		QueueName:    queueName,
+		RoutingKey:   PayoutRoutingKey,
 	}
 }
 
@@ -35,8 +56,11 @@ func (p *PayoutPublisher) Dispatch(ctx context.Context, event outbox.Event) erro
 	if p == nil || p.publisher == nil {
 		return errors.New("rabbitmq payout publisher is not configured")
 	}
-	if p.queueName == "" {
-		return errors.New("rabbitmq payout queue name is required")
+	if p.exchangeName == "" {
+		return errors.New("rabbitmq payout exchange name is required")
+	}
+	if p.routingKey == "" {
+		return errors.New("rabbitmq payout routing key is required")
 	}
 
 	body, err := EncodePayoutJob(event)
@@ -44,7 +68,7 @@ func (p *PayoutPublisher) Dispatch(ctx context.Context, event outbox.Event) erro
 		return err
 	}
 
-	return p.publisher.Publish(ctx, p.queueName, body)
+	return p.publisher.Publish(ctx, p.exchangeName, p.routingKey, body)
 }
 
 func EncodePayoutJob(event outbox.Event) ([]byte, error) {
