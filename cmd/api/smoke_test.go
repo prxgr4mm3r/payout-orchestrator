@@ -27,7 +27,7 @@ import (
 	payoutservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/payouts"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/outbox"
-	"github.com/prxgr4mm3r/payout-orchestrator/internal/processor"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/payout-worker/execution"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/providersimulator"
 )
 
@@ -81,8 +81,8 @@ func TestMVPPayoutSmoke(t *testing.T) {
 	logger := log.New(io.Discard, "", 0)
 	outboxRelay := outbox.NewRelay(
 		outbox.NewDBTxRunner(appPool, queries),
-		outbox.NewInlineDispatcher(processor.NewExecutionHandler(
-			processor.NewDBTxRunner(appPool, queries),
+		outbox.NewInlineDispatcher(execution.NewHandler(
+			execution.NewDBTxRunner(appPool, queries),
 			providersimulator.New(providersimulator.Config{}),
 			logger,
 		)),

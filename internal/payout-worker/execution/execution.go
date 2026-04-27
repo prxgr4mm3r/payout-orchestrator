@@ -1,4 +1,4 @@
-package processor
+package execution
 
 import (
 	"context"
@@ -25,27 +25,27 @@ var (
 	ErrUnsupportedNumeric         = errors.New("unsupported numeric value")
 )
 
-type ExecutionHandler struct {
+type Handler struct {
 	txRunner TxRunner
 	provider provider.PayoutProvider
 	logger   *log.Logger
 }
 
-func NewExecutionHandler(txRunner TxRunner, provider provider.PayoutProvider, logger *log.Logger) *ExecutionHandler {
+func NewHandler(txRunner TxRunner, provider provider.PayoutProvider, logger *log.Logger) *Handler {
 	if logger == nil {
 		logger = log.Default()
 	}
 
-	return &ExecutionHandler{
+	return &Handler{
 		txRunner: txRunner,
 		provider: provider,
 		logger:   logger,
 	}
 }
 
-func (h *ExecutionHandler) HandleEvent(ctx context.Context, event outbox.Event) error {
+func (h *Handler) HandleEvent(ctx context.Context, event outbox.Event) error {
 	if h == nil || h.txRunner == nil || h.provider == nil {
-		return errors.New("processor execution handler is not configured")
+		return errors.New("payout execution handler is not configured")
 	}
 	if event.EventType != outbox.EventTypeProcessPayout {
 		return ErrUnsupportedEvent
@@ -56,9 +56,9 @@ func (h *ExecutionHandler) HandleEvent(ctx context.Context, event outbox.Event) 
 	})
 }
 
-func (h *ExecutionHandler) execute(ctx context.Context, store Store, event outbox.Event) error {
+func (h *Handler) execute(ctx context.Context, store Store, event outbox.Event) error {
 	if store == nil {
-		return errors.New("processor store is not configured")
+		return errors.New("payout execution store is not configured")
 	}
 
 	payload, err := parsePayoutCreatedOutboxPayload(event.Payload)

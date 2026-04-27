@@ -28,7 +28,7 @@ func main() {
 	dbURL := os.Getenv("DB_URL")
 	rabbitmqURL := os.Getenv("RABBITMQ_URL")
 	payoutQueueName := loadStringEnv("PAYOUT_QUEUE_NAME", "payout.jobs")
-	processorEnabled, err := loadBoolEnv("PROCESSOR_ENABLED", false)
+	outboxRelayEnabled, err := loadBoolEnv("PROCESSOR_ENABLED", false)
 	if err != nil {
 		log.Fatalf("load PROCESSOR_ENABLED: %v", err)
 	}
@@ -61,7 +61,7 @@ func main() {
 	payoutsHandler := handlers.NewPayoutsHandler(payoutsSvc)
 	var outboxRelay *outbox.Relay
 	var rabbitmqClient *platformrabbitmq.Client
-	if processorEnabled {
+	if outboxRelayEnabled {
 		rabbitmqClient, err = platformrabbitmq.Open(rabbitmqURL)
 		if err != nil {
 			log.Fatalf("open rabbitmq: %v", err)
@@ -93,9 +93,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var runProcessor func(context.Context) error
-	if processorEnabled {
-		runProcessor = outboxRelay.Run
+	var runOutboxRelay func(context.Context) error
+	if outboxRelayEnabled {
+		runOutboxRelay = outboxRelay.Run
 		log.Printf(
 			"outbox relay publisher is enabled interval=%s claim_timeout=%s queue=%s",
 			pollInterval,
@@ -107,7 +107,7 @@ func main() {
 	}
 
 	log.Printf("server is running on %s", srv.Addr)
-	if err := runApplication(ctx, srv, srv.ListenAndServe, runProcessor, 5*time.Second, log.Default()); err != nil {
+	if err := runApplication(ctx, srv, srv.ListenAndServe, runOutboxRelay, 5*time.Second, log.Default()); err != nil {
 		log.Fatalf("run application: %v", err)
 	}
 
@@ -119,7 +119,7 @@ func runApplication(
 	ctx context.Context,
 	srv *http.Server,
 	serve func() error,
-	runProcessor func(context.Context) error,
+	runOutboxRelay func(context.Context) error,
 	shutdownTimeout time.Duration,
 	logger *log.Logger,
 ) error {
@@ -141,24 +141,24 @@ func runApplication(
 		serverDone <- normalizeServeError(serve())
 	}()
 
-	var processorDone chan error
-	if runProcessor != nil {
-		processorDone = make(chan error, 1)
+	var outboxRelayDone chan error
+	if runOutboxRelay != nil {
+		outboxRelayDone = make(chan error, 1)
 		go func() {
-			processorDone <- normalizeProcessorError(runProcessor(appCtx))
+			outboxRelayDone <- normalizeOutboxRelayError(runOutboxRelay(appCtx))
 		}()
 	}
 
 	var serverErr error
 	serverDoneReceived := false
-	var processorErr error
-	processorDoneReceived := processorDone == nil
+	var outboxRelayErr error
+	outboxRelayDoneReceived := outboxRelayDone == nil
 
 	select {
 	case serverErr = <-serverDone:
 		serverDoneReceived = true
-	case processorErr = <-processorDone:
-		processorDoneReceived = true
+	case outboxRelayErr = <-outboxRelayDone:
+		outboxRelayDoneReceived = true
 	case <-ctx.Done():
 		logger.Println("shutting down server...")
 	}
@@ -175,15 +175,15 @@ func runApplication(
 	if !serverDoneReceived {
 		serverErr = firstNonNilError(serverErr, <-serverDone)
 	}
-	if !processorDoneReceived {
-		processorErr = firstNonNilError(processorErr, <-processorDone)
+	if !outboxRelayDoneReceived {
+		outboxRelayErr = firstNonNilError(outboxRelayErr, <-outboxRelayDone)
 	}
 
 	if serverErr != nil {
 		return serverErr
 	}
-	if processorErr != nil {
-		return processorErr
+	if outboxRelayErr != nil {
+		return outboxRelayErr
 	}
 
 	return nil
@@ -197,7 +197,7 @@ func normalizeServeError(err error) error {
 	return err
 }
 
-func normalizeProcessorError(err error) error {
+func normalizeOutboxRelayError(err error) error {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return nil
 	}

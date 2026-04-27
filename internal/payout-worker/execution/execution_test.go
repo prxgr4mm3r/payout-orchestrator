@@ -1,4 +1,4 @@
-package processor
+package execution
 
 import (
 	"context"
@@ -71,7 +71,7 @@ func TestHandleEventProcessesPayoutToSuccess(t *testing.T) {
 	statuses := make([]string, 0, 2)
 	providerCalled := false
 
-	handler := NewExecutionHandler(fakeTxRunner{
+	handler := NewHandler(fakeTxRunner{
 		run: func(ctx context.Context, fn func(store Store) error) error {
 			return fn(fakeStore{
 				getPayout: func(_ context.Context, arg db.GetPayoutByClientIDParams) (db.Payout, error) {
@@ -172,7 +172,7 @@ func TestHandleEventPersistsFailedPayoutOutcome(t *testing.T) {
 
 	var failedReason string
 
-	handler := NewExecutionHandler(fakeTxRunner{
+	handler := NewHandler(fakeTxRunner{
 		run: func(ctx context.Context, fn func(store Store) error) error {
 			return fn(fakeStore{
 				getPayout: func(context.Context, db.GetPayoutByClientIDParams) (db.Payout, error) {
@@ -223,7 +223,7 @@ func TestHandleEventPersistsFailedPayoutOutcome(t *testing.T) {
 func TestHandleEventRejectsUnsupportedType(t *testing.T) {
 	t.Parallel()
 
-	handler := NewExecutionHandler(fakeTxRunner{
+	handler := NewHandler(fakeTxRunner{
 		run: func(context.Context, func(store Store) error) error {
 			t.Fatal("transaction runner should not be used for unsupported events")
 			return nil

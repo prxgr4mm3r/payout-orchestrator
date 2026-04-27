@@ -11,9 +11,9 @@ import (
 
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
 	payoutworker "github.com/prxgr4mm3r/payout-orchestrator/internal/payout-worker"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/payout-worker/execution"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/platform/postgres"
 	platformrabbitmq "github.com/prxgr4mm3r/payout-orchestrator/internal/platform/rabbitmq"
-	"github.com/prxgr4mm3r/payout-orchestrator/internal/processor"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/providersimulator"
 )
 
@@ -44,8 +44,8 @@ func main() {
 	queries := db.New(dbPool)
 	worker := payoutworker.New(
 		rabbitmqClient,
-		processor.NewExecutionHandler(
-			processor.NewDBTxRunner(dbPool, queries),
+		execution.NewHandler(
+			execution.NewDBTxRunner(dbPool, queries),
 			providersimulator.New(providersimulator.Config{}),
 			log.Default(),
 		),
