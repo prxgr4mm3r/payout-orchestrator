@@ -457,6 +457,9 @@ Why store both `client_id` and `funding_source_id`:
 
 ### 12.4 IdempotencyKey
 Represents an idempotency record for payout creation.
+Each `(client_id, key)` resolves to one payout, and each payout may be resolved
+by at most one idempotency key record. This prevents multiple idempotency aliases
+from pointing at the same payout.
 
 Fields:
 - client_id
@@ -584,6 +587,9 @@ The duplicate problem appears at request intake time. If not handled there, dupl
 
 ### Storage
 Source of truth for idempotency is PostgreSQL.
+The database enforces both unique `(client_id, key)` lookup semantics and unique
+`payout_id` resolution, so a payout cannot be aliased by multiple idempotency
+records.
 Redis may later be used as a read-through optimization cache.
 
 ---
@@ -799,7 +805,7 @@ erDiagram
     CLIENTS ||--o{ PAYOUTS : creates
     FUNDING_SOURCES ||--o{ PAYOUTS : funds
     CLIENTS ||--o{ IDEMPOTENCY_KEYS : scopes
-    PAYOUTS ||--o{ IDEMPOTENCY_KEYS : resolves
+    PAYOUTS ||--o| IDEMPOTENCY_KEYS : resolves
     PAYOUTS ||--o{ OUTBOX_EVENTS : emits
     CLIENTS ||--o{ WEBHOOK_DELIVERIES : receives
     PAYOUTS ||--o{ WEBHOOK_DELIVERIES : notifies
@@ -843,7 +849,7 @@ erDiagram
         text key PK
         uuid client_id PK,FK
         text request_hash
-        uuid payout_id FK
+        uuid payout_id FK,UK
         timestamptz created_at
     }
 
