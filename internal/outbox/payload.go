@@ -47,3 +47,12 @@ func UnmarshalProcessPayoutPayload(raw []byte) (ProcessPayoutPayload, error) {
 
 	return payload, nil
 }
+
+func UnmarshalPayoutResultWebhookPayload(raw []byte) (PayoutResultWebhookPayload, error) {
+	var payload PayoutResultWebhookPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return PayoutResultWebhookPayload{}, err
+	}
+
+	return payload, nil
+}
