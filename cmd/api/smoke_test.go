@@ -79,6 +79,13 @@ func TestMVPPayoutSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create client: %v", err)
 	}
+	clientRecord, err = queries.UpdateClientWebhookURL(ctx, db.UpdateClientWebhookURLParams{
+		ID:         clientRecord.ID,
+		WebhookUrl: pgtype.Text{String: "https://example.com/webhooks/payouts", Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("update client webhook url: %v", err)
+	}
 
 	authSvc := authservice.NewService(queries)
 	fundingSourcesSvc := fundingservice.NewService(queries)
@@ -157,22 +164,9 @@ func TestMVPPayoutSmoke(t *testing.T) {
 		t.Fatalf("expected db payout status succeeded, got %s", payoutRecord.Status)
 	}
 
-	var outboxStatus string
-	var outboxProcessed bool
-	err = appPool.QueryRow(ctx, `
-		SELECT status, processed_at IS NOT NULL
-		FROM outbox_events
-		WHERE entity_id = $1
-	`, mustUUID(t, payout.ID)).Scan(&outboxStatus, &outboxProcessed)
-	if err != nil {
-		t.Fatalf("load outbox event: %v", err)
-	}
-	if outboxStatus != "processed" {
-		t.Fatalf("expected outbox event status processed, got %s", outboxStatus)
-	}
-	if !outboxProcessed {
-		t.Fatal("expected outbox event to have processed_at timestamp")
-	}
+	waitForOutboxProcessed(t, ctx, appPool, mustUUID(t, payout.ID))
+
+	assertPendingWebhookDelivery(t, ctx, queries, mustUUID(t, payout.ID), clientID, clientRecord.WebhookUrl.String, "succeeded")
 }
 
 func TestRabbitMQPayoutWorkerSmoke(t *testing.T) {
@@ -251,6 +245,13 @@ func TestRabbitMQPayoutWorkerSmoke(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create client: %v", err)
+	}
+	clientRecord, err = queries.UpdateClientWebhookURL(ctx, db.UpdateClientWebhookURLParams{
+		ID:         clientRecord.ID,
+		WebhookUrl: pgtype.Text{String: "https://example.com/webhooks/payouts", Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("update client webhook url: %v", err)
 	}
 
 	logger := log.New(io.Discard, "", 0)
@@ -336,22 +337,9 @@ func TestRabbitMQPayoutWorkerSmoke(t *testing.T) {
 		t.Fatalf("expected final payout status succeeded, got %s", finalPayout.Status)
 	}
 
-	var outboxStatus string
-	var outboxProcessed bool
-	err = appPool.QueryRow(ctx, `
-		SELECT status, processed_at IS NOT NULL
-		FROM outbox_events
-		WHERE entity_id = $1
-	`, mustUUID(t, payout.ID)).Scan(&outboxStatus, &outboxProcessed)
-	if err != nil {
-		t.Fatalf("load outbox event: %v", err)
-	}
-	if outboxStatus != "processed" {
-		t.Fatalf("expected outbox event status processed, got %s", outboxStatus)
-	}
-	if !outboxProcessed {
-		t.Fatal("expected outbox event to have processed_at timestamp")
-	}
+	waitForOutboxProcessed(t, ctx, appPool, mustUUID(t, payout.ID))
+
+	assertPendingWebhookDelivery(t, ctx, queries, mustUUID(t, payout.ID), clientID, clientRecord.WebhookUrl.String, "succeeded")
 }
 
 type smokeFundingSourceResponse struct {
@@ -361,6 +349,89 @@ type smokeFundingSourceResponse struct {
 type smokePayoutResponse struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
+}
+
+func assertPendingWebhookDelivery(
+	t *testing.T,
+	ctx context.Context,
+	queries *db.Queries,
+	payoutID pgtype.UUID,
+	clientID pgtype.UUID,
+	targetURL string,
+	status string,
+) {
+	t.Helper()
+
+	deliveries, err := queries.ListWebhookDeliveriesByPayoutID(ctx, payoutID)
+	if err != nil {
+		t.Fatalf("list webhook deliveries: %v", err)
+	}
+	if len(deliveries) != 1 {
+		t.Fatalf("expected 1 webhook delivery, got %d", len(deliveries))
+	}
+
+	delivery := deliveries[0]
+	if delivery.ClientID != clientID {
+		t.Fatalf("expected webhook client id %s, got %s", clientID.String(), delivery.ClientID.String())
+	}
+	if delivery.TargetUrl != targetURL {
+		t.Fatalf("expected webhook target url %s, got %s", targetURL, delivery.TargetUrl)
+	}
+	if delivery.Status != "pending" {
+		t.Fatalf("expected webhook delivery status pending, got %s", delivery.Status)
+	}
+	if delivery.AttemptCount != 0 {
+		t.Fatalf("expected webhook delivery attempt count 0, got %d", delivery.AttemptCount)
+	}
+
+	var payload outbox.PayoutResultWebhookPayload
+	if err := json.Unmarshal(delivery.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal webhook payload: %v", err)
+	}
+	if payload.EventType != outbox.EventTypePayoutResultWebhook {
+		t.Fatalf("expected webhook event type %s, got %s", outbox.EventTypePayoutResultWebhook, payload.EventType)
+	}
+	if payload.PayoutID != payoutID.String() {
+		t.Fatalf("expected webhook payload payout id %s, got %s", payoutID.String(), payload.PayoutID)
+	}
+	if payload.ClientID != clientID.String() {
+		t.Fatalf("expected webhook payload client id %s, got %s", clientID.String(), payload.ClientID)
+	}
+	if payload.Status != status {
+		t.Fatalf("expected webhook payload status %s, got %s", status, payload.Status)
+	}
+}
+
+func waitForOutboxProcessed(t *testing.T, ctx context.Context, pool *pgxpool.Pool, entityID pgtype.UUID) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	var lastStatus string
+	var lastProcessed bool
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		lastErr = pool.QueryRow(ctx, `
+			SELECT status, processed_at IS NOT NULL
+			FROM outbox_events
+			WHERE entity_id = $1
+		`, entityID).Scan(&lastStatus, &lastProcessed)
+		if lastErr == nil && lastStatus == "processed" && lastProcessed {
+			return
+		}
+
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if lastErr != nil {
+		t.Fatalf("load outbox event: %v", lastErr)
+	}
+	if lastStatus != "processed" {
+		t.Fatalf("expected outbox event status processed, got %s", lastStatus)
+	}
+	if !lastProcessed {
+		t.Fatal("expected outbox event to have processed_at timestamp")
+	}
 }
 
 func smokeTestDBURL() string {

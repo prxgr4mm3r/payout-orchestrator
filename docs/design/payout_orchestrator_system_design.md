@@ -324,7 +324,8 @@ Responsibilities:
 - call provider simulator
 - persist result to PostgreSQL
 - write raw technical payloads to MongoDB
-- create webhook outbox/job if needed
+- create a pending webhook delivery job when a final payout result is recorded
+  and the client has a webhook URL configured
 
 Layer ownership:
 - payout worker orchestration belongs to `internal/apps/payoutworker`
@@ -335,7 +336,7 @@ Layer ownership:
 
 ### 9.4 Webhook Worker
 Responsibilities:
-- consume webhook jobs
+- consume pending webhook delivery jobs
 - deliver webhook to client endpoint
 - store delivery attempts
 - later support retry and DLQ strategy
@@ -637,11 +638,12 @@ It:
 - calls provider simulator
 - stores result
 - sets final payout status
+- creates a pending `webhook_deliveries` row when the client has `webhook_url`
 - stores raw provider payloads to MongoDB
 
 ### Step 5: Notify client
-A webhook event is generated.
-Webhook Worker sends notification to client webhook endpoint.
+A pending webhook delivery job exists in PostgreSQL.
+Webhook Worker sends notification to the client webhook endpoint.
 
 ---
 
@@ -711,6 +713,11 @@ flowchart LR
         Worker2[Payout worker]
     end
 
+    subgraph WebhookWorkers[Webhook worker instances]
+        WebhookWorker1[Webhook worker]
+        WebhookWorker2[Webhook worker]
+    end
+
     Postgres[(PostgreSQL source of truth)]
     Rabbit[(RabbitMQ broker)]
     Provider[Provider simulator]
@@ -728,10 +735,14 @@ flowchart LR
     Rabbit -->|deliver payout jobs| Worker2
     Worker1 -->|load and update payouts| Postgres
     Worker2 -->|load and update payouts| Postgres
+    Worker1 -->|create webhook_deliveries rows| Postgres
+    Worker2 -->|create webhook_deliveries rows| Postgres
     Worker1 -->|execute payout| Provider
     Worker2 -->|execute payout| Provider
-    Worker1 -. future webhook job .-> WebhookTarget
-    Worker2 -. future webhook job .-> WebhookTarget
+    WebhookWorker1 -->|claim pending webhook deliveries| Postgres
+    WebhookWorker2 -->|claim pending webhook deliveries| Postgres
+    WebhookWorker1 -. future HTTP webhook .-> WebhookTarget
+    WebhookWorker2 -. future HTTP webhook .-> WebhookTarget
 ```
 
 #### API instance architecture
