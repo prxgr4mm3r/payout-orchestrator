@@ -51,27 +51,75 @@ func (h *Handler) HandleEvent(ctx context.Context, event outbox.Event) error {
 		return ErrUnsupportedEvent
 	}
 
-	return h.txRunner.WithinTx(ctx, func(store Store) error {
-		return h.execute(ctx, store, event)
-	})
-}
-
-func (h *Handler) execute(ctx context.Context, store Store, event outbox.Event) error {
-	if store == nil {
-		return errors.New("payout execution store is not configured")
-	}
-
 	payload, err := parsePayoutCreatedOutboxPayload(event.Payload)
 	if err != nil {
 		return err
 	}
 
+	prepared, err := h.prepareExecution(ctx, payload)
+	if err != nil {
+		return err
+	}
+	if !prepared.shouldExecute {
+		return nil
+	}
+
+	result, err := h.provider.ExecutePayout(ctx, provider.ExecutePayoutInput{
+		PayoutID:         prepared.payout.ID.String(),
+		FundingSourceID:  prepared.fundingSource.ID.String(),
+		PaymentAccountID: prepared.fundingSource.PaymentAccountID,
+		Amount:           prepared.amount,
+		Currency:         prepared.payout.Currency,
+	})
+	if err != nil {
+		return err
+	}
+
+	return h.recordExecutionResult(ctx, event, prepared, result)
+}
+
+type preparedExecution struct {
+	payout        db.Payout
+	fundingSource db.FundingSource
+	amount        string
+	shouldExecute bool
+}
+
+func (h *Handler) prepareExecution(ctx context.Context, payload parsedPayoutCreatedOutboxPayload) (preparedExecution, error) {
+	var prepared preparedExecution
+
+	err := h.txRunner.WithinTx(ctx, func(store Store) error {
+		if store == nil {
+			return errors.New("payout execution store is not configured")
+		}
+
+		payoutRecord, fundingSource, amount, shouldExecute, err := prepareExecutionInTx(ctx, store, payload)
+		if err != nil {
+			return err
+		}
+
+		prepared = preparedExecution{
+			payout:        payoutRecord,
+			fundingSource: fundingSource,
+			amount:        amount,
+			shouldExecute: shouldExecute,
+		}
+		return nil
+	})
+	if err != nil {
+		return preparedExecution{}, err
+	}
+
+	return prepared, nil
+}
+
+func prepareExecutionInTx(ctx context.Context, store Store, payload parsedPayoutCreatedOutboxPayload) (db.Payout, db.FundingSource, string, bool, error) {
 	payoutRecord, err := store.GetPayoutByClientID(ctx, db.GetPayoutByClientIDParams{
 		ClientID: payload.clientID,
 		ID:       payload.payoutID,
 	})
 	if err != nil {
-		return err
+		return db.Payout{}, db.FundingSource{}, "", false, err
 	}
 
 	fundingSource, err := store.GetFundingSourceByClientID(ctx, db.GetFundingSourceByClientIDParams{
@@ -79,44 +127,48 @@ func (h *Handler) execute(ctx context.Context, store Store, event outbox.Event) 
 		ID:       payoutRecord.FundingSourceID,
 	})
 	if err != nil {
-		return err
+		return db.Payout{}, db.FundingSource{}, "", false, err
 	}
 
 	switch payoutdomain.Status(payoutRecord.Status) {
 	case payoutdomain.StatusPending:
-		if _, err := store.UpdatePayoutStatus(ctx, db.UpdatePayoutStatusParams{
+		payoutRecord, err = store.UpdatePayoutStatus(ctx, db.UpdatePayoutStatusParams{
 			ID:     payoutRecord.ID,
 			Status: string(payoutdomain.StatusProcessing),
-		}); err != nil {
-			return err
+		})
+		if err != nil {
+			return db.Payout{}, db.FundingSource{}, "", false, err
 		}
 	case payoutdomain.StatusProcessing:
 	case payoutdomain.StatusSucceeded:
-		return nil
+		return payoutRecord, fundingSource, "", false, nil
 	default:
-		return ErrPayoutNotReadyForExecution
+		return db.Payout{}, db.FundingSource{}, "", false, ErrPayoutNotReadyForExecution
 	}
 
 	amount, err := numericString(payoutRecord.Amount)
 	if err != nil {
-		return err
+		return db.Payout{}, db.FundingSource{}, "", false, err
 	}
 
-	result, err := h.provider.ExecutePayout(ctx, provider.ExecutePayoutInput{
-		PayoutID:         payoutRecord.ID.String(),
-		FundingSourceID:  fundingSource.ID.String(),
-		PaymentAccountID: fundingSource.PaymentAccountID,
-		Amount:           amount,
-		Currency:         payoutRecord.Currency,
+	return payoutRecord, fundingSource, amount, true, nil
+}
+
+func (h *Handler) recordExecutionResult(ctx context.Context, event outbox.Event, prepared preparedExecution, result provider.ExecutePayoutResult) error {
+	return h.txRunner.WithinTx(ctx, func(store Store) error {
+		if store == nil {
+			return errors.New("payout execution store is not configured")
+		}
+
+		return h.recordExecutionResultInTx(ctx, store, event, prepared, result)
 	})
-	if err != nil {
-		return err
-	}
+}
 
+func (h *Handler) recordExecutionResultInTx(ctx context.Context, store Store, event outbox.Event, prepared preparedExecution, result provider.ExecutePayoutResult) error {
 	switch result.Status {
 	case payoutdomain.StatusSucceeded:
 		if _, err := store.UpdatePayoutStatus(ctx, db.UpdatePayoutStatusParams{
-			ID:     payoutRecord.ID,
+			ID:     prepared.payout.ID,
 			Status: string(payoutdomain.StatusSucceeded),
 		}); err != nil {
 			return err
@@ -124,14 +176,14 @@ func (h *Handler) execute(ctx context.Context, store Store, event outbox.Event) 
 
 		h.logger.Printf(
 			"payout execution succeeded payout_id=%s event_id=%s funding_source_id=%s",
-			payoutRecord.ID.String(),
+			prepared.payout.ID.String(),
 			event.ID,
-			fundingSource.ID.String(),
+			prepared.fundingSource.ID.String(),
 		)
 		return nil
 	case payoutdomain.StatusFailed:
 		if _, err := store.UpdatePayoutFailure(ctx, db.UpdatePayoutFailureParams{
-			ID: payoutRecord.ID,
+			ID: prepared.payout.ID,
 			FailureReason: pgtype.Text{
 				String: result.FailureReason,
 				Valid:  strings.TrimSpace(result.FailureReason) != "",
@@ -142,9 +194,9 @@ func (h *Handler) execute(ctx context.Context, store Store, event outbox.Event) 
 
 		h.logger.Printf(
 			"payout execution failed payout_id=%s event_id=%s funding_source_id=%s failure_reason=%q",
-			payoutRecord.ID.String(),
+			prepared.payout.ID.String(),
 			event.ID,
-			fundingSource.ID.String(),
+			prepared.fundingSource.ID.String(),
 			result.FailureReason,
 		)
 		return nil
