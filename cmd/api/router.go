@@ -3,7 +3,7 @@ package main
 import (
 	"net/http"
 
-	"github.com/prxgr4mm3r/payout-orchestrator/internal/api/handlers"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/apps/api/handlers"
 )
 
 func NewRouter(

@@ -9,9 +9,9 @@ import (
 	"syscall"
 	"time"
 
+	payoutworker "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/payoutworker"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/apps/payoutworker/execution"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
-	payoutworker "github.com/prxgr4mm3r/payout-orchestrator/internal/payout-worker"
-	"github.com/prxgr4mm3r/payout-orchestrator/internal/payout-worker/execution"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/platform/postgres"
 	platformrabbitmq "github.com/prxgr4mm3r/payout-orchestrator/internal/platform/rabbitmq"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/providersimulator"

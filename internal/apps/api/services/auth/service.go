@@ -7,7 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/api/auth"
+	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/api/auth"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
 )
 

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/api/auth"
-	payoutservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/payouts"
+	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/api/auth"
+	payoutservice "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/api/services/payouts"
 )
 
 type fakePayoutReadService struct {

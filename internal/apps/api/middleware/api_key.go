@@ -5,8 +5,8 @@ import (
 	"errors"
 	"net/http"
 
-	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/api/auth"
-	authservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/auth"
+	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/api/auth"
+	authservice "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/api/services/auth"
 )
 
 const apiKeyHeader = "X-API-Key"
