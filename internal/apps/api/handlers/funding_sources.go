@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/api/auth"
-	fundingservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/fundingsources"
+	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/api/auth"
+	fundingservice "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/api/services/fundingsources"
 )
 
 const (

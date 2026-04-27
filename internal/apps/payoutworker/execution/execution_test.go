@@ -1,4 +1,4 @@
-package processor
+package execution
 
 import (
 	"context"
@@ -70,9 +70,15 @@ func TestHandleEventProcessesPayoutToSuccess(t *testing.T) {
 
 	statuses := make([]string, 0, 2)
 	providerCalled := false
+	inTx := false
 
-	handler := NewExecutionHandler(fakeTxRunner{
+	handler := NewHandler(fakeTxRunner{
 		run: func(ctx context.Context, fn func(store Store) error) error {
+			inTx = true
+			defer func() {
+				inTx = false
+			}()
+
 			return fn(fakeStore{
 				getPayout: func(_ context.Context, arg db.GetPayoutByClientIDParams) (db.Payout, error) {
 					if arg.ClientID != clientID {
@@ -115,6 +121,9 @@ func TestHandleEventProcessesPayoutToSuccess(t *testing.T) {
 	}, fakeProvider{
 		execute: func(_ context.Context, input provider.ExecutePayoutInput) (provider.ExecutePayoutResult, error) {
 			providerCalled = true
+			if inTx {
+				t.Fatal("provider should be called outside the database transaction")
+			}
 			if input.PayoutID != payoutID.String() {
 				t.Fatalf("expected payout id %s, got %s", payoutID.String(), input.PayoutID)
 			}
@@ -171,9 +180,15 @@ func TestHandleEventPersistsFailedPayoutOutcome(t *testing.T) {
 	}
 
 	var failedReason string
+	inTx := false
 
-	handler := NewExecutionHandler(fakeTxRunner{
+	handler := NewHandler(fakeTxRunner{
 		run: func(ctx context.Context, fn func(store Store) error) error {
+			inTx = true
+			defer func() {
+				inTx = false
+			}()
+
 			return fn(fakeStore{
 				getPayout: func(context.Context, db.GetPayoutByClientIDParams) (db.Payout, error) {
 					return dbPayout(t, payoutID, clientID, fundingSourceID, "125.50", "USDC", string(payoutdomain.StatusPending), ""), nil
@@ -199,6 +214,10 @@ func TestHandleEventPersistsFailedPayoutOutcome(t *testing.T) {
 		},
 	}, fakeProvider{
 		execute: func(context.Context, provider.ExecutePayoutInput) (provider.ExecutePayoutResult, error) {
+			if inTx {
+				t.Fatal("provider should be called outside the database transaction")
+			}
+
 			return provider.ExecutePayoutResult{
 				Status:        payoutdomain.StatusFailed,
 				FailureReason: "provider rejected payout",
@@ -223,7 +242,7 @@ func TestHandleEventPersistsFailedPayoutOutcome(t *testing.T) {
 func TestHandleEventRejectsUnsupportedType(t *testing.T) {
 	t.Parallel()
 
-	handler := NewExecutionHandler(fakeTxRunner{
+	handler := NewHandler(fakeTxRunner{
 		run: func(context.Context, func(store Store) error) error {
 			t.Fatal("transaction runner should not be used for unsupported events")
 			return nil

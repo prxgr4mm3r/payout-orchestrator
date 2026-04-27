@@ -1,4 +1,4 @@
-package processor
+package execution
 
 import (
 	"context"
@@ -27,7 +27,7 @@ func NewDBTxRunner(beginner txBeginner, queries *db.Queries) *DBTxRunner {
 
 func (r *DBTxRunner) WithinTx(ctx context.Context, fn func(store Store) error) error {
 	if r == nil || r.beginner == nil || r.queries == nil {
-		return errors.New("processor transaction runner is not configured")
+		return errors.New("payout execution transaction runner is not configured")
 	}
 
 	tx, err := r.beginner.Begin(ctx)

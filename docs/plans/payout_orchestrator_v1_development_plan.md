@@ -71,7 +71,7 @@ Branch naming:
 
 Commit naming:
 
-- `test: fix smoke test processor wiring`
+- `test: fix smoke test payout execution wiring`
 - `payouts: add recipient fields`
 - `platform: add rabbitmq consumer adapter`
 
@@ -132,9 +132,9 @@ Goal:
 
 Commits:
 
-- `test: fix smoke test processor wiring`
+- `test: fix smoke test payout execution wiring`
 - `test: make full package test run green`
-- `docs: align verification notes with current processor setup`
+- `docs: align verification notes with current payout execution setup`
 
 Outcomes:
 
@@ -400,6 +400,8 @@ While implementing this roadmap:
 - do not postpone verification until the end of the roadmap
 - prefer stable seams over broad refactors
 - prefer one working worker flow over multiple partially wired services
-- do not place payout or webhook worker orchestration logic inside `internal/platform/rabbitmq`
+- do not place payout or webhook worker orchestration logic inside RabbitMQ transport or broker adapter packages
+- keep runtime-service-specific application services under the owning service package
+- keep top-level `internal/*` packages for genuinely shared domain, integration contract, database, and platform code
 
 This plan should be treated as the default path from MVP to `v1` unless the target design itself changes.

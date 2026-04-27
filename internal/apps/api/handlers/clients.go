@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/api/auth"
+	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/api/auth"
 )
 
 type ClientsHandler struct{}

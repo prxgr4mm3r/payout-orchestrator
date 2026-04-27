@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/api/auth"
-	"github.com/prxgr4mm3r/payout-orchestrator/internal/api/handlers"
-	fundingservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/fundingsources"
-	payoutservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/payouts"
+	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/api/auth"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/apps/api/handlers"
+	fundingservice "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/api/services/fundingsources"
+	payoutservice "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/api/services/payouts"
 )
 
 type fakeFundingSourceCreator struct {

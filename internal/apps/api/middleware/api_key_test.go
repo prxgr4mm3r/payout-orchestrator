@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/api/auth"
-	authservice "github.com/prxgr4mm3r/payout-orchestrator/internal/api/services/auth"
+	apiauth "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/api/auth"
+	authservice "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/api/services/auth"
 )
 
 type fakeAuthenticator struct {
