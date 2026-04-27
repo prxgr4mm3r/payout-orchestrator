@@ -116,3 +116,55 @@ func (q *Queries) ListWebhookDeliveriesByPayoutID(ctx context.Context, payoutID 
 	}
 	return items, nil
 }
+
+const markWebhookDeliveryDelivered = `-- name: MarkWebhookDeliveryDelivered :one
+UPDATE webhook_deliveries
+SET status = 'delivered',
+    attempt_count = attempt_count + 1,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, payout_id, client_id, target_url, payload, status, attempt_count, created_at, updated_at
+`
+
+func (q *Queries) MarkWebhookDeliveryDelivered(ctx context.Context, id pgtype.UUID) (WebhookDelivery, error) {
+	row := q.db.QueryRow(ctx, markWebhookDeliveryDelivered, id)
+	var i WebhookDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.PayoutID,
+		&i.ClientID,
+		&i.TargetUrl,
+		&i.Payload,
+		&i.Status,
+		&i.AttemptCount,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const markWebhookDeliveryFailed = `-- name: MarkWebhookDeliveryFailed :one
+UPDATE webhook_deliveries
+SET status = 'failed',
+    attempt_count = attempt_count + 1,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, payout_id, client_id, target_url, payload, status, attempt_count, created_at, updated_at
+`
+
+func (q *Queries) MarkWebhookDeliveryFailed(ctx context.Context, id pgtype.UUID) (WebhookDelivery, error) {
+	row := q.db.QueryRow(ctx, markWebhookDeliveryFailed, id)
+	var i WebhookDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.PayoutID,
+		&i.ClientID,
+		&i.TargetUrl,
+		&i.Payload,
+		&i.Status,
+		&i.AttemptCount,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}

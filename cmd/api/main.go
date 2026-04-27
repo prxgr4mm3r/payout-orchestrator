@@ -28,6 +28,7 @@ func main() {
 	dbURL := os.Getenv("DB_URL")
 	rabbitmqURL := os.Getenv("RABBITMQ_URL")
 	payoutQueueName := loadStringEnv("PAYOUT_QUEUE_NAME", "payout.jobs")
+	webhookQueueName := loadStringEnv("WEBHOOK_QUEUE_NAME", "webhook.deliveries")
 	outboxRelayEnabled, err := loadBoolEnv("PROCESSOR_ENABLED", false)
 	if err != nil {
 		log.Fatalf("load PROCESSOR_ENABLED: %v", err)
@@ -59,7 +60,7 @@ func main() {
 	clientsHandler := &handlers.ClientsHandler{}
 	fundingSourcesHandler := handlers.NewFundingSourcesHandler(fundingSourcesSvc)
 	payoutsHandler := handlers.NewPayoutsHandler(payoutsSvc)
-	var outboxRelay *outbox.Relay
+	var outboxRelays []*outbox.Relay
 	var rabbitmqClient *platformrabbitmq.Client
 	if outboxRelayEnabled {
 		rabbitmqClient, err = platformrabbitmq.Open(rabbitmqURL)
@@ -72,8 +73,12 @@ func main() {
 		if err := rabbitmqClient.EnsureTopology(payoutTopology); err != nil {
 			log.Fatalf("ensure payout topology: %v", err)
 		}
+		webhookTopology := rabbitmqbroker.NewWebhookTopology(webhookQueueName)
+		if err := rabbitmqClient.EnsureTopology(webhookTopology); err != nil {
+			log.Fatalf("ensure webhook topology: %v", err)
+		}
 
-		outboxRelay = outbox.NewRelay(
+		payoutRelay := outbox.NewRelay(
 			outbox.NewDBTxRunner(dbPool, queries),
 			rabbitmqbroker.NewPayoutPublisher(rabbitmqClient, payoutTopology.ExchangeName, payoutTopology.RoutingKey),
 			log.Default(),
@@ -83,6 +88,17 @@ func main() {
 				EventTypes:   []string{outbox.EventTypeProcessPayout},
 			},
 		)
+		webhookRelay := outbox.NewRelay(
+			outbox.NewDBTxRunner(dbPool, queries),
+			rabbitmqbroker.NewWebhookPublisher(rabbitmqClient, webhookTopology.ExchangeName, webhookTopology.RoutingKey),
+			log.Default(),
+			outbox.Config{
+				PollInterval: pollInterval,
+				ClaimTimeout: claimTimeout,
+				EventTypes:   []string{outbox.EventTypePayoutResultWebhook},
+			},
+		)
+		outboxRelays = []*outbox.Relay{payoutRelay, webhookRelay}
 	}
 
 	router := NewRouter(clientsHandler, fundingSourcesHandler, payoutsHandler, middleware.APIKey(authSvc))
@@ -97,12 +113,15 @@ func main() {
 
 	var runOutboxRelay func(context.Context) error
 	if outboxRelayEnabled {
-		runOutboxRelay = outboxRelay.Run
+		runOutboxRelay = func(ctx context.Context) error {
+			return runOutboxRelays(ctx, outboxRelays...)
+		}
 		log.Printf(
-			"outbox relay publisher is enabled interval=%s claim_timeout=%s queue=%s",
+			"outbox relay publisher is enabled interval=%s claim_timeout=%s payout_queue=%s webhook_queue=%s",
 			pollInterval,
 			claimTimeout,
 			payoutQueueName,
+			webhookQueueName,
 		)
 	} else {
 		log.Println("outbox relay publisher is disabled")
@@ -115,6 +134,31 @@ func main() {
 
 	log.Println("closing postgres pool...")
 	log.Println("server gracefully stopped")
+}
+
+func runOutboxRelays(ctx context.Context, relays ...*outbox.Relay) error {
+	if len(relays) == 0 {
+		return nil
+	}
+
+	relayCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errCh := make(chan error, len(relays))
+	for _, relay := range relays {
+		go func(relay *outbox.Relay) {
+			errCh <- normalizeOutboxRelayError(relay.Run(relayCtx))
+		}(relay)
+	}
+
+	for range relays {
+		if err := <-errCh; err != nil {
+			cancel()
+			return err
+		}
+	}
+
+	return nil
 }
 
 func runApplication(

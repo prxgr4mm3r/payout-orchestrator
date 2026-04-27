@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -29,6 +30,8 @@ import (
 	payoutservice "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/api/services/payouts"
 	payoutworker "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/payoutworker"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/apps/payoutworker/execution"
+	webhookworker "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/webhookworker"
+	"github.com/prxgr4mm3r/payout-orchestrator/internal/apps/webhookworker/delivery"
 	rabbitmqbroker "github.com/prxgr4mm3r/payout-orchestrator/internal/broker/rabbitmq"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/outbox"
@@ -165,7 +168,7 @@ func TestMVPPayoutSmoke(t *testing.T) {
 		t.Fatalf("expected db payout status succeeded, got %s", payoutRecord.Status)
 	}
 
-	waitForOutboxProcessed(t, ctx, appPool, mustUUID(t, payout.ID))
+	waitForOutboxProcessed(t, ctx, appPool, mustUUID(t, payout.ID), outbox.EventTypeProcessPayout)
 
 	assertPendingWebhookOutboxEvent(t, ctx, appPool, mustUUID(t, payout.ID), clientID, clientRecord.WebhookUrl.String, "succeeded")
 }
@@ -201,6 +204,7 @@ func TestRabbitMQPayoutWorkerSmoke(t *testing.T) {
 	})
 
 	queueName := fmt.Sprintf("payout.jobs.smoke.%d", time.Now().UnixNano())
+	webhookQueueName := fmt.Sprintf("webhook.deliveries.smoke.%d", time.Now().UnixNano())
 
 	appPool := openPoolWithSearchPath(t, ctx, dbURL, schemaName)
 	t.Cleanup(appPool.Close)
@@ -226,18 +230,45 @@ func TestRabbitMQPayoutWorkerSmoke(t *testing.T) {
 			t.Fatalf("close rabbitmq consumer: %v", err)
 		}
 	})
+	webhookConsumerClient, err := platformrabbitmq.Open(rabbitmqURL)
+	if err != nil {
+		t.Fatalf("open rabbitmq webhook consumer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := webhookConsumerClient.Close(); err != nil {
+			t.Fatalf("close rabbitmq webhook consumer: %v", err)
+		}
+	})
 
 	payoutTopology := rabbitmqbroker.NewPayoutTopology(queueName)
 	if err := publisherClient.EnsureTopology(payoutTopology); err != nil {
 		t.Fatalf("ensure payout topology: %v", err)
 	}
+	webhookTopology := rabbitmqbroker.NewWebhookTopology(webhookQueueName)
+	if err := publisherClient.EnsureTopology(webhookTopology); err != nil {
+		t.Fatalf("ensure webhook topology: %v", err)
+	}
 	t.Cleanup(func() {
 		deleteRabbitMQQueue(t, rabbitmqURL, queueName)
+		deleteRabbitMQQueue(t, rabbitmqURL, webhookQueueName)
 	})
 
 	queries := db.New(appPool)
 	clientID := mustUUID(t, "2c97a4da-38a7-46a8-9205-6482d0cfc6fb")
 	apiKey := mustUUID(t, "32d82e79-43e6-4e1f-8c29-71e5deba7e1d")
+
+	webhookReceived := make(chan []byte, 1)
+	webhookServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read webhook body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		webhookReceived <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(webhookServer.Close)
 
 	clientRecord, err := queries.CreateClient(ctx, db.CreateClientParams{
 		ID:     clientID,
@@ -249,7 +280,7 @@ func TestRabbitMQPayoutWorkerSmoke(t *testing.T) {
 	}
 	clientRecord, err = queries.UpdateClientWebhookURL(ctx, db.UpdateClientWebhookURLParams{
 		ID:         clientRecord.ID,
-		WebhookUrl: pgtype.Text{String: "https://example.com/webhooks/payouts", Valid: true},
+		WebhookUrl: pgtype.Text{String: webhookServer.URL, Valid: true},
 	})
 	if err != nil {
 		t.Fatalf("update client webhook url: %v", err)
@@ -272,10 +303,25 @@ func TestRabbitMQPayoutWorkerSmoke(t *testing.T) {
 	go func() {
 		workerErrCh <- worker.Run(workerCtx)
 	}()
+	webhookWorker := webhookworker.New(
+		webhookConsumerClient,
+		delivery.NewService(queries, webhookServer.Client(), logger),
+		webhookQueueName,
+		logger,
+	)
+	webhookWorkerCtx, cancelWebhookWorker := context.WithCancel(context.Background())
+	webhookWorkerErrCh := make(chan error, 1)
+	go func() {
+		webhookWorkerErrCh <- webhookWorker.Run(webhookWorkerCtx)
+	}()
 	t.Cleanup(func() {
 		cancelWorker()
 		if err := <-workerErrCh; err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("stop payout worker: %v", err)
+		}
+		cancelWebhookWorker()
+		if err := <-webhookWorkerErrCh; err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("stop webhook worker: %v", err)
 		}
 	})
 
@@ -290,6 +336,16 @@ func TestRabbitMQPayoutWorkerSmoke(t *testing.T) {
 			PollInterval: 10 * time.Millisecond,
 			ClaimTimeout: time.Second,
 			EventTypes:   []string{outbox.EventTypeProcessPayout},
+		},
+	)
+	webhookOutboxRelay := outbox.NewRelay(
+		outbox.NewDBTxRunner(appPool, queries),
+		rabbitmqbroker.NewWebhookPublisher(publisherClient, webhookTopology.ExchangeName, webhookTopology.RoutingKey),
+		logger,
+		outbox.Config{
+			PollInterval: 10 * time.Millisecond,
+			ClaimTimeout: time.Second,
+			EventTypes:   []string{outbox.EventTypePayoutResultWebhook},
 		},
 	)
 
@@ -316,7 +372,9 @@ func TestRabbitMQPayoutWorkerSmoke(t *testing.T) {
 			runCtx,
 			server,
 			func() error { return server.Serve(listener) },
-			outboxRelay.Run,
+			func(ctx context.Context) error {
+				return runOutboxRelays(ctx, outboxRelay, webhookOutboxRelay)
+			},
 			5*time.Second,
 			logger,
 		)
@@ -339,9 +397,10 @@ func TestRabbitMQPayoutWorkerSmoke(t *testing.T) {
 		t.Fatalf("expected final payout status succeeded, got %s", finalPayout.Status)
 	}
 
-	waitForOutboxProcessed(t, ctx, appPool, mustUUID(t, payout.ID))
+	waitForOutboxProcessed(t, ctx, appPool, mustUUID(t, payout.ID), outbox.EventTypeProcessPayout)
+	waitForOutboxProcessed(t, ctx, appPool, mustUUID(t, payout.ID), outbox.EventTypePayoutResultWebhook)
 
-	assertPendingWebhookOutboxEvent(t, ctx, appPool, mustUUID(t, payout.ID), clientID, clientRecord.WebhookUrl.String, "succeeded")
+	assertDeliveredWebhook(t, ctx, queries, webhookReceived, mustUUID(t, payout.ID), clientID, clientRecord.WebhookUrl.String, "succeeded")
 }
 
 type smokeFundingSourceResponse struct {
@@ -401,7 +460,67 @@ func assertPendingWebhookOutboxEvent(
 	}
 }
 
-func waitForOutboxProcessed(t *testing.T, ctx context.Context, pool *pgxpool.Pool, entityID pgtype.UUID) {
+func assertDeliveredWebhook(
+	t *testing.T,
+	ctx context.Context,
+	queries *db.Queries,
+	received <-chan []byte,
+	payoutID pgtype.UUID,
+	clientID pgtype.UUID,
+	targetURL string,
+	status string,
+) {
+	t.Helper()
+
+	var body []byte
+	select {
+	case body = <-received:
+	case <-time.After(5 * time.Second):
+		t.Fatal("webhook request was not delivered")
+	}
+
+	var payload outbox.PayoutResultWebhookPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal delivered webhook payload: %v", err)
+	}
+	if payload.EventType != outbox.EventTypePayoutResultWebhook {
+		t.Fatalf("expected webhook event type %s, got %s", outbox.EventTypePayoutResultWebhook, payload.EventType)
+	}
+	if payload.PayoutID != payoutID.String() {
+		t.Fatalf("expected webhook payload payout id %s, got %s", payoutID.String(), payload.PayoutID)
+	}
+	if payload.ClientID != clientID.String() {
+		t.Fatalf("expected webhook payload client id %s, got %s", clientID.String(), payload.ClientID)
+	}
+	if payload.TargetURL != targetURL {
+		t.Fatalf("expected webhook payload target url %s, got %s", targetURL, payload.TargetURL)
+	}
+	if payload.Status != status {
+		t.Fatalf("expected webhook payload status %s, got %s", status, payload.Status)
+	}
+
+	deliveries, err := queries.ListWebhookDeliveriesByPayoutID(ctx, payoutID)
+	if err != nil {
+		t.Fatalf("list webhook deliveries: %v", err)
+	}
+	if len(deliveries) != 1 {
+		t.Fatalf("expected 1 webhook delivery, got %d", len(deliveries))
+	}
+	if deliveries[0].ClientID != clientID {
+		t.Fatalf("expected webhook delivery client id %s, got %s", clientID.String(), deliveries[0].ClientID.String())
+	}
+	if deliveries[0].TargetUrl != targetURL {
+		t.Fatalf("expected webhook delivery target url %s, got %s", targetURL, deliveries[0].TargetUrl)
+	}
+	if deliveries[0].Status != "delivered" {
+		t.Fatalf("expected webhook delivery status delivered, got %s", deliveries[0].Status)
+	}
+	if deliveries[0].AttemptCount != 1 {
+		t.Fatalf("expected webhook delivery attempt count 1, got %d", deliveries[0].AttemptCount)
+	}
+}
+
+func waitForOutboxProcessed(t *testing.T, ctx context.Context, pool *pgxpool.Pool, entityID pgtype.UUID, eventType string) {
 	t.Helper()
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -414,7 +533,7 @@ func waitForOutboxProcessed(t *testing.T, ctx context.Context, pool *pgxpool.Poo
 			SELECT status, processed_at IS NOT NULL
 			FROM outbox_events
 			WHERE entity_id = $1 AND event_type = $2
-		`, entityID, outbox.EventTypeProcessPayout).Scan(&lastStatus, &lastProcessed)
+		`, entityID, eventType).Scan(&lastStatus, &lastProcessed)
 		if lastErr == nil && lastStatus == "processed" && lastProcessed {
 			return
 		}
