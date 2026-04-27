@@ -14,6 +14,7 @@ import (
 
 type EventStore interface {
 	ClaimNextPendingOutboxEvent(ctx context.Context, reclaimBefore pgtype.Timestamptz) (db.OutboxEvent, error)
+	ClaimNextPendingOutboxEventByTypes(ctx context.Context, arg db.ClaimNextPendingOutboxEventByTypesParams) (db.OutboxEvent, error)
 	MarkOutboxEventAsProcessed(ctx context.Context, id pgtype.UUID) (db.OutboxEvent, error)
 	ReleaseOutboxEventClaim(ctx context.Context, id pgtype.UUID) (db.OutboxEvent, error)
 }
@@ -40,6 +41,7 @@ type Event struct {
 type Config struct {
 	PollInterval time.Duration
 	ClaimTimeout time.Duration
+	EventTypes   []string
 }
 
 type Relay struct {
@@ -154,7 +156,18 @@ func (r *Relay) claimNextPendingEvent(ctx context.Context, reclaimBefore pgtype.
 	var event db.OutboxEvent
 
 	err := r.txRunner.WithinTx(ctx, func(store EventStore) error {
-		claimed, err := store.ClaimNextPendingOutboxEvent(ctx, reclaimBefore)
+		var (
+			claimed db.OutboxEvent
+			err     error
+		)
+		if len(r.config.EventTypes) > 0 {
+			claimed, err = store.ClaimNextPendingOutboxEventByTypes(ctx, db.ClaimNextPendingOutboxEventByTypesParams{
+				ReclaimBefore: reclaimBefore,
+				EventTypes:    r.config.EventTypes,
+			})
+		} else {
+			claimed, err = store.ClaimNextPendingOutboxEvent(ctx, reclaimBefore)
+		}
 		if err != nil {
 			return err
 		}

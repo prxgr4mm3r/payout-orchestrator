@@ -147,11 +147,13 @@ Responsibilities:
 - load payout and funding source
 - call provider simulator
 - persist result
+- write webhook outbox events when final payout results need client notification
 
 ### 5.6 Webhook Worker
 Internal worker.
 
 Responsibilities:
+- consume webhook jobs from RabbitMQ
 - send outbound webhooks
 - record delivery attempts
 - support retry-ready flow
@@ -258,9 +260,14 @@ Payout jobs use an explicit durable direct exchange and durable queue:
 - queue: `payout.jobs`
 - routing key: `payout.process`
 
-Outbox publishers publish payout jobs as persistent JSON messages and wait for a
-RabbitMQ publisher confirmation before marking the originating outbox event as
-processed in PostgreSQL.
+Webhook jobs use a separate durable direct exchange and durable queue:
+- exchange: `webhook.deliveries`
+- queue: `webhook.deliveries`
+- routing key: `webhook.deliver`
+
+Outbox publishers publish payout and webhook jobs as persistent JSON messages
+and wait for a RabbitMQ publisher confirmation before marking the originating
+outbox event as processed in PostgreSQL.
 
 ### Redis
 Auxiliary acceleration layer.
@@ -324,7 +331,8 @@ Responsibilities:
 - call provider simulator
 - persist result to PostgreSQL
 - write raw technical payloads to MongoDB
-- create webhook outbox/job if needed
+- write a `payout_result_webhook` outbox event when a final payout result is
+  recorded and the client has a webhook URL configured
 
 Layer ownership:
 - payout worker orchestration belongs to `internal/apps/payoutworker`
@@ -335,9 +343,9 @@ Layer ownership:
 
 ### 9.4 Webhook Worker
 Responsibilities:
-- consume webhook jobs
+- consume webhook delivery jobs from RabbitMQ
 - deliver webhook to client endpoint
-- store delivery attempts
+- create and update `webhook_deliveries` records for delivery attempts
 - later support retry and DLQ strategy
 
 ### 9.5 Payout Recovery Service
@@ -637,11 +645,16 @@ It:
 - calls provider simulator
 - stores result
 - sets final payout status
+- writes a `payout_result_webhook` outbox event when the client has `webhook_url`
 - stores raw provider payloads to MongoDB
 
-### Step 5: Notify client
-A webhook event is generated.
-Webhook Worker sends notification to client webhook endpoint.
+### Step 5: Publish webhook job
+Outbox Publisher polls the pending webhook outbox event and publishes a webhook
+delivery message to RabbitMQ.
+
+### Step 6: Notify client
+Webhook Worker consumes the message, records a `webhook_deliveries` attempt, and
+sends notification to the client webhook endpoint.
 
 ---
 
@@ -711,6 +724,11 @@ flowchart LR
         Worker2[Payout worker]
     end
 
+    subgraph WebhookWorkers[Webhook worker instances]
+        WebhookWorker1[Webhook worker]
+        WebhookWorker2[Webhook worker]
+    end
+
     Postgres[(PostgreSQL source of truth)]
     Rabbit[(RabbitMQ broker)]
     Provider[Provider simulator]
@@ -722,16 +740,22 @@ flowchart LR
     API2 -->|SQL transactions| Postgres
     Relay1 -->|claim outbox rows| Postgres
     Relay2 -->|claim outbox rows| Postgres
-    Relay1 -->|publish payout jobs| Rabbit
-    Relay2 -->|publish payout jobs| Rabbit
+    Relay1 -->|publish payout and webhook jobs| Rabbit
+    Relay2 -->|publish payout and webhook jobs| Rabbit
     Rabbit -->|deliver payout jobs| Worker1
     Rabbit -->|deliver payout jobs| Worker2
+    Rabbit -->|deliver webhook jobs| WebhookWorker1
+    Rabbit -->|deliver webhook jobs| WebhookWorker2
     Worker1 -->|load and update payouts| Postgres
     Worker2 -->|load and update payouts| Postgres
+    Worker1 -->|insert webhook outbox events| Postgres
+    Worker2 -->|insert webhook outbox events| Postgres
     Worker1 -->|execute payout| Provider
     Worker2 -->|execute payout| Provider
-    Worker1 -. future webhook job .-> WebhookTarget
-    Worker2 -. future webhook job .-> WebhookTarget
+    WebhookWorker1 -->|create and update webhook_deliveries| Postgres
+    WebhookWorker2 -->|create and update webhook_deliveries| Postgres
+    WebhookWorker1 -->|HTTP webhook| WebhookTarget
+    WebhookWorker2 -->|HTTP webhook| WebhookTarget
 ```
 
 #### API instance architecture
@@ -780,21 +804,37 @@ flowchart LR
     OutboxRelay[Outbox relay]
     PayoutExchange[(Durable direct exchange: payout.jobs)]
     PayoutQueue[[Durable queue: payout.jobs]]
+    WebhookExchange[(Durable direct exchange: webhook.deliveries)]
+    WebhookQueue[[Durable queue: webhook.deliveries]]
 
-    subgraph Consumers[Payout worker consumers]
+    subgraph PayoutConsumers[Payout worker consumers]
         WorkerA[Payout worker A]
         WorkerB[Payout worker B]
+    end
+
+    subgraph WebhookConsumers[Webhook worker consumers]
+        WebhookWorkerA[Webhook worker A]
+        WebhookWorkerB[Webhook worker B]
     end
 
     OutboxRelay -->|persistent JSON message routing_key=payout.process| PayoutExchange
     PayoutExchange -->|durable binding payout.process| PayoutQueue
     PayoutExchange -->|publisher confirm ack/nack| OutboxRelay
+    OutboxRelay -->|persistent JSON message routing_key=webhook.deliver| WebhookExchange
+    WebhookExchange -->|durable binding webhook.deliver| WebhookQueue
+    WebhookExchange -->|publisher confirm ack/nack| OutboxRelay
     PayoutQueue -->|manual delivery| WorkerA
     PayoutQueue -->|manual delivery| WorkerB
+    WebhookQueue -->|manual delivery| WebhookWorkerA
+    WebhookQueue -->|manual delivery| WebhookWorkerB
     WorkerA -->|Ack on success| PayoutQueue
     WorkerA -->|Nack requeue on handler error| PayoutQueue
     WorkerB -->|Ack on success| PayoutQueue
     WorkerB -->|Nack requeue on handler error| PayoutQueue
+    WebhookWorkerA -->|Ack on successful handoff| WebhookQueue
+    WebhookWorkerA -->|Nack requeue on handler error| WebhookQueue
+    WebhookWorkerB -->|Ack on successful handoff| WebhookQueue
+    WebhookWorkerB -->|Nack requeue on handler error| WebhookQueue
 ```
 
 #### PostgreSQL schema

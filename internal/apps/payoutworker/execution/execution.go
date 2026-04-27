@@ -167,10 +167,14 @@ func (h *Handler) recordExecutionResult(ctx context.Context, event outbox.Event,
 func (h *Handler) recordExecutionResultInTx(ctx context.Context, store Store, event outbox.Event, prepared preparedExecution, result provider.ExecutePayoutResult) error {
 	switch result.Status {
 	case payoutdomain.StatusSucceeded:
-		if _, err := store.UpdatePayoutStatus(ctx, db.UpdatePayoutStatusParams{
+		finalPayout, err := store.UpdatePayoutStatus(ctx, db.UpdatePayoutStatusParams{
 			ID:     prepared.payout.ID,
 			Status: string(payoutdomain.StatusSucceeded),
-		}); err != nil {
+		})
+		if err != nil {
+			return err
+		}
+		if err := createWebhookOutboxEventIfConfigured(ctx, store, finalPayout); err != nil {
 			return err
 		}
 
@@ -182,13 +186,17 @@ func (h *Handler) recordExecutionResultInTx(ctx context.Context, store Store, ev
 		)
 		return nil
 	case payoutdomain.StatusFailed:
-		if _, err := store.UpdatePayoutFailure(ctx, db.UpdatePayoutFailureParams{
+		finalPayout, err := store.UpdatePayoutFailure(ctx, db.UpdatePayoutFailureParams{
 			ID: prepared.payout.ID,
 			FailureReason: pgtype.Text{
 				String: result.FailureReason,
 				Valid:  strings.TrimSpace(result.FailureReason) != "",
 			},
-		}); err != nil {
+		})
+		if err != nil {
+			return err
+		}
+		if err := createWebhookOutboxEventIfConfigured(ctx, store, finalPayout); err != nil {
 			return err
 		}
 
@@ -203,6 +211,36 @@ func (h *Handler) recordExecutionResultInTx(ctx context.Context, store Store, ev
 	default:
 		return ErrUnsupportedProviderResult
 	}
+}
+
+func createWebhookOutboxEventIfConfigured(ctx context.Context, store Store, payout db.Payout) error {
+	client, err := store.GetClientById(ctx, payout.ClientID)
+	if err != nil {
+		return err
+	}
+
+	targetURL := strings.TrimSpace(client.WebhookUrl.String)
+	if !client.WebhookUrl.Valid || targetURL == "" {
+		return nil
+	}
+
+	payload, err := outbox.MarshalPayoutResultWebhookPayload(
+		payout.ID.String(),
+		payout.ClientID.String(),
+		targetURL,
+		payout.Status,
+		payout.FailureReason.String,
+	)
+	if err != nil {
+		return err
+	}
+
+	_, err = store.CreateOutboxEvent(ctx, db.CreateOutboxEventParams{
+		EventType: outbox.EventTypePayoutResultWebhook,
+		EntityID:  payout.ID,
+		Payload:   payload,
+	})
+	return err
 }
 
 type parsedPayoutCreatedOutboxPayload struct {

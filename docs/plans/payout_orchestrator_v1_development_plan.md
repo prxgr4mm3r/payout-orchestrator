@@ -267,22 +267,25 @@ Goal:
 Commits:
 
 - `outbox: add payout result webhook event`
-- `worker: persist webhook delivery job`
+- `worker: emit payout result webhook outbox event`
 - `test: cover webhook job creation`
 
 Outcomes:
 
 - successful and failed payouts can trigger client notifications
-- webhook delivery has a clean handoff point from payout execution
+- final payout results create durable webhook outbox events
+- webhook delivery has a clean handoff point from payout execution before RabbitMQ publication
 
 ### PR-07 Webhook Worker
 
 Goal:
 
-- deliver payout result notifications asynchronously
+- deliver payout result notifications asynchronously from RabbitMQ webhook jobs
 
 Commits:
 
+- `broker: add webhook delivery topology`
+- `broker: add webhook publisher`
 - `webhooks: add delivery service`
 - `broker: add webhook consumer`
 - `worker: process webhook delivery jobs`
@@ -291,7 +294,8 @@ Commits:
 Outcomes:
 
 - clients can receive payout result callbacks
-- webhook delivery is decoupled from payout execution
+- webhook delivery is decoupled from payout execution through outbox and RabbitMQ
+- `webhook_deliveries` records delivery attempts and outcomes
 
 ### PR-08 Retry And Attempt Policy
 

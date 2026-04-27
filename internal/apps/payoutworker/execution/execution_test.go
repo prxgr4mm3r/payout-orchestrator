@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log"
@@ -17,6 +18,8 @@ import (
 )
 
 type fakeStore struct {
+	createOutboxEvent   func(ctx context.Context, arg db.CreateOutboxEventParams) (db.OutboxEvent, error)
+	getClient           func(ctx context.Context, id pgtype.UUID) (db.Client, error)
 	getFundingSource    func(ctx context.Context, arg db.GetFundingSourceByClientIDParams) (db.FundingSource, error)
 	getPayout           func(ctx context.Context, arg db.GetPayoutByClientIDParams) (db.Payout, error)
 	updatePayoutFailure func(ctx context.Context, arg db.UpdatePayoutFailureParams) (db.Payout, error)
@@ -55,6 +58,14 @@ func (f fakeProvider) ExecutePayout(ctx context.Context, input provider.ExecuteP
 	return f.execute(ctx, input)
 }
 
+func (f fakeStore) CreateOutboxEvent(ctx context.Context, arg db.CreateOutboxEventParams) (db.OutboxEvent, error) {
+	return f.createOutboxEvent(ctx, arg)
+}
+
+func (f fakeStore) GetClientById(ctx context.Context, id pgtype.UUID) (db.Client, error) {
+	return f.getClient(ctx, id)
+}
+
 func TestHandleEventProcessesPayoutToSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -70,6 +81,7 @@ func TestHandleEventProcessesPayoutToSuccess(t *testing.T) {
 
 	statuses := make([]string, 0, 2)
 	providerCalled := false
+	webhookOutboxEventCreated := false
 	inTx := false
 
 	handler := NewHandler(fakeTxRunner{
@@ -103,6 +115,50 @@ func TestHandleEventProcessesPayoutToSuccess(t *testing.T) {
 						ClientID:         clientID,
 						PaymentAccountID: "acct_123",
 					}, nil
+				},
+				getClient: func(_ context.Context, id pgtype.UUID) (db.Client, error) {
+					if id != clientID {
+						t.Fatalf("expected client id %s, got %s", clientID.String(), id.String())
+					}
+
+					return db.Client{
+						ID:         clientID,
+						WebhookUrl: pgtype.Text{String: " https://example.com/webhooks/payouts ", Valid: true},
+					}, nil
+				},
+				createOutboxEvent: func(_ context.Context, arg db.CreateOutboxEventParams) (db.OutboxEvent, error) {
+					webhookOutboxEventCreated = true
+					if arg.EventType != outbox.EventTypePayoutResultWebhook {
+						t.Fatalf("expected webhook outbox event type %s, got %s", outbox.EventTypePayoutResultWebhook, arg.EventType)
+					}
+					if arg.EntityID != payoutID {
+						t.Fatalf("expected webhook outbox entity id %s, got %s", payoutID.String(), arg.EntityID.String())
+					}
+
+					var payload outbox.PayoutResultWebhookPayload
+					if err := json.Unmarshal(arg.Payload, &payload); err != nil {
+						t.Fatalf("unmarshal webhook payload: %v", err)
+					}
+					if payload.EventType != outbox.EventTypePayoutResultWebhook {
+						t.Fatalf("expected webhook event type %s, got %s", outbox.EventTypePayoutResultWebhook, payload.EventType)
+					}
+					if payload.PayoutID != payoutID.String() {
+						t.Fatalf("expected payload payout id %s, got %s", payoutID.String(), payload.PayoutID)
+					}
+					if payload.ClientID != clientID.String() {
+						t.Fatalf("expected payload client id %s, got %s", clientID.String(), payload.ClientID)
+					}
+					if payload.TargetURL != "https://example.com/webhooks/payouts" {
+						t.Fatalf("expected trimmed payload target url, got %q", payload.TargetURL)
+					}
+					if payload.Status != string(payoutdomain.StatusSucceeded) {
+						t.Fatalf("expected payload status succeeded, got %s", payload.Status)
+					}
+					if payload.FailureReason != "" {
+						t.Fatalf("expected empty failure reason, got %q", payload.FailureReason)
+					}
+
+					return db.OutboxEvent{}, nil
 				},
 				updatePayoutStatus: func(_ context.Context, arg db.UpdatePayoutStatusParams) (db.Payout, error) {
 					if arg.ID != payoutID {
@@ -165,6 +221,9 @@ func TestHandleEventProcessesPayoutToSuccess(t *testing.T) {
 	if statuses[1] != string(payoutdomain.StatusSucceeded) {
 		t.Fatalf("expected second status update to succeeded, got %s", statuses[1])
 	}
+	if !webhookOutboxEventCreated {
+		t.Fatal("expected webhook outbox event to be created")
+	}
 }
 
 func TestHandleEventPersistsFailedPayoutOutcome(t *testing.T) {
@@ -180,6 +239,7 @@ func TestHandleEventPersistsFailedPayoutOutcome(t *testing.T) {
 	}
 
 	var failedReason string
+	var webhookPayload outbox.PayoutResultWebhookPayload
 	inTx := false
 
 	handler := NewHandler(fakeTxRunner{
@@ -199,6 +259,21 @@ func TestHandleEventPersistsFailedPayoutOutcome(t *testing.T) {
 						ClientID:         clientID,
 						PaymentAccountID: "acct_123",
 					}, nil
+				},
+				getClient: func(context.Context, pgtype.UUID) (db.Client, error) {
+					return db.Client{
+						ID:         clientID,
+						WebhookUrl: pgtype.Text{String: "https://example.com/webhooks/payouts", Valid: true},
+					}, nil
+				},
+				createOutboxEvent: func(_ context.Context, arg db.CreateOutboxEventParams) (db.OutboxEvent, error) {
+					if arg.EventType != outbox.EventTypePayoutResultWebhook {
+						t.Fatalf("expected webhook outbox event type %s, got %s", outbox.EventTypePayoutResultWebhook, arg.EventType)
+					}
+					if err := json.Unmarshal(arg.Payload, &webhookPayload); err != nil {
+						t.Fatalf("unmarshal webhook payload: %v", err)
+					}
+					return db.OutboxEvent{}, nil
 				},
 				updatePayoutStatus: func(_ context.Context, arg db.UpdatePayoutStatusParams) (db.Payout, error) {
 					return dbPayout(t, payoutID, clientID, fundingSourceID, "125.50", "USDC", arg.Status, ""), nil
@@ -236,6 +311,15 @@ func TestHandleEventPersistsFailedPayoutOutcome(t *testing.T) {
 	}
 	if failedReason != "provider rejected payout" {
 		t.Fatalf("expected failure reason to be persisted, got %q", failedReason)
+	}
+	if webhookPayload.Status != string(payoutdomain.StatusFailed) {
+		t.Fatalf("expected webhook payload status failed, got %s", webhookPayload.Status)
+	}
+	if webhookPayload.TargetURL != "https://example.com/webhooks/payouts" {
+		t.Fatalf("expected webhook target url, got %q", webhookPayload.TargetURL)
+	}
+	if webhookPayload.FailureReason != "provider rejected payout" {
+		t.Fatalf("expected webhook failure reason, got %q", webhookPayload.FailureReason)
 	}
 }
 

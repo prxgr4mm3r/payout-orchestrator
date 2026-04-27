@@ -15,6 +15,7 @@ import (
 
 type fakeStore struct {
 	claim         func(ctx context.Context, reclaimBefore pgtype.Timestamptz) (db.OutboxEvent, error)
+	claimByTypes  func(ctx context.Context, arg db.ClaimNextPendingOutboxEventByTypesParams) (db.OutboxEvent, error)
 	markProcessed func(ctx context.Context, id pgtype.UUID) (db.OutboxEvent, error)
 	release       func(ctx context.Context, id pgtype.UUID) (db.OutboxEvent, error)
 }
@@ -29,6 +30,10 @@ func (f fakeTxRunner) WithinTx(ctx context.Context, fn func(store EventStore) er
 
 func (f fakeStore) ClaimNextPendingOutboxEvent(ctx context.Context, reclaimBefore pgtype.Timestamptz) (db.OutboxEvent, error) {
 	return f.claim(ctx, reclaimBefore)
+}
+
+func (f fakeStore) ClaimNextPendingOutboxEventByTypes(ctx context.Context, arg db.ClaimNextPendingOutboxEventByTypesParams) (db.OutboxEvent, error) {
+	return f.claimByTypes(ctx, arg)
 }
 
 func (f fakeStore) MarkOutboxEventAsProcessed(ctx context.Context, id pgtype.UUID) (db.OutboxEvent, error) {
@@ -129,6 +134,90 @@ func TestRunOnceDispatchesClaimedEvent(t *testing.T) {
 	}
 	if txCalls != 2 {
 		t.Fatalf("expected 2 transactions, got %d", txCalls)
+	}
+}
+
+func TestRunOnceClaimsConfiguredEventTypes(t *testing.T) {
+	t.Parallel()
+
+	eventID := mustUUID(t, "efb98fe4-b75f-4f1d-b9c7-794e66da2abb")
+	entityID := mustUUID(t, "2c97a4da-38a7-46a8-9205-6482d0cfc6fb")
+	txCalls := 0
+
+	relay := NewRelay(fakeTxRunner{
+		run: func(ctx context.Context, fn func(store EventStore) error) error {
+			txCalls++
+			switch txCalls {
+			case 1:
+				return fn(fakeStore{
+					claim: func(context.Context, pgtype.Timestamptz) (db.OutboxEvent, error) {
+						t.Fatal("unfiltered claim should not be called")
+						return db.OutboxEvent{}, nil
+					},
+					claimByTypes: func(_ context.Context, arg db.ClaimNextPendingOutboxEventByTypesParams) (db.OutboxEvent, error) {
+						if len(arg.EventTypes) != 1 || arg.EventTypes[0] != EventTypeProcessPayout {
+							t.Fatalf("expected process payout event filter, got %#v", arg.EventTypes)
+						}
+						if !arg.ReclaimBefore.Valid || arg.ReclaimBefore.Time.IsZero() {
+							t.Fatal("expected non-zero reclaim deadline")
+						}
+
+						return db.OutboxEvent{
+							ID:        eventID,
+							EntityID:  entityID,
+							EventType: EventTypeProcessPayout,
+							Payload:   []byte(`{"ok":true}`),
+							Status:    "processing",
+						}, nil
+					},
+					markProcessed: func(context.Context, pgtype.UUID) (db.OutboxEvent, error) {
+						t.Fatal("mark processed should happen in a separate transaction")
+						return db.OutboxEvent{}, nil
+					},
+					release: func(context.Context, pgtype.UUID) (db.OutboxEvent, error) {
+						t.Fatal("release should not be called on successful dispatch")
+						return db.OutboxEvent{}, nil
+					},
+				})
+			case 2:
+				return fn(fakeStore{
+					claim: func(context.Context, pgtype.Timestamptz) (db.OutboxEvent, error) {
+						t.Fatal("claim should not be called while marking processed")
+						return db.OutboxEvent{}, nil
+					},
+					claimByTypes: func(context.Context, db.ClaimNextPendingOutboxEventByTypesParams) (db.OutboxEvent, error) {
+						t.Fatal("claim by types should not be called while marking processed")
+						return db.OutboxEvent{}, nil
+					},
+					markProcessed: func(_ context.Context, id pgtype.UUID) (db.OutboxEvent, error) {
+						if id != eventID {
+							t.Fatalf("expected processed event id %s, got %s", eventID.String(), id.String())
+						}
+						return db.OutboxEvent{ID: id, Status: "processed"}, nil
+					},
+					release: func(context.Context, pgtype.UUID) (db.OutboxEvent, error) {
+						t.Fatal("release should not be called on successful dispatch")
+						return db.OutboxEvent{}, nil
+					},
+				})
+			default:
+				t.Fatalf("unexpected transaction call %d", txCalls)
+				return nil
+			}
+		},
+	}, eventDispatcherFunc(func(context.Context, Event) error {
+		return nil
+	}), log.New(io.Discard, "", 0), Config{
+		ClaimTimeout: 15 * time.Second,
+		EventTypes:   []string{EventTypeProcessPayout},
+	})
+
+	claimed, err := relay.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if !claimed {
+		t.Fatal("expected event to be claimed")
 	}
 }
 
