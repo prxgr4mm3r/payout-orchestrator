@@ -18,12 +18,12 @@ import (
 )
 
 type fakeStore struct {
-	createWebhookDelivery func(ctx context.Context, arg db.CreateWebhookDeliveryParams) (db.WebhookDelivery, error)
-	getClient             func(ctx context.Context, id pgtype.UUID) (db.Client, error)
-	getFundingSource      func(ctx context.Context, arg db.GetFundingSourceByClientIDParams) (db.FundingSource, error)
-	getPayout             func(ctx context.Context, arg db.GetPayoutByClientIDParams) (db.Payout, error)
-	updatePayoutFailure   func(ctx context.Context, arg db.UpdatePayoutFailureParams) (db.Payout, error)
-	updatePayoutStatus    func(ctx context.Context, arg db.UpdatePayoutStatusParams) (db.Payout, error)
+	createOutboxEvent   func(ctx context.Context, arg db.CreateOutboxEventParams) (db.OutboxEvent, error)
+	getClient           func(ctx context.Context, id pgtype.UUID) (db.Client, error)
+	getFundingSource    func(ctx context.Context, arg db.GetFundingSourceByClientIDParams) (db.FundingSource, error)
+	getPayout           func(ctx context.Context, arg db.GetPayoutByClientIDParams) (db.Payout, error)
+	updatePayoutFailure func(ctx context.Context, arg db.UpdatePayoutFailureParams) (db.Payout, error)
+	updatePayoutStatus  func(ctx context.Context, arg db.UpdatePayoutStatusParams) (db.Payout, error)
 }
 
 type fakeTxRunner struct {
@@ -58,8 +58,8 @@ func (f fakeProvider) ExecutePayout(ctx context.Context, input provider.ExecuteP
 	return f.execute(ctx, input)
 }
 
-func (f fakeStore) CreateWebhookDelivery(ctx context.Context, arg db.CreateWebhookDeliveryParams) (db.WebhookDelivery, error) {
-	return f.createWebhookDelivery(ctx, arg)
+func (f fakeStore) CreateOutboxEvent(ctx context.Context, arg db.CreateOutboxEventParams) (db.OutboxEvent, error) {
+	return f.createOutboxEvent(ctx, arg)
 }
 
 func (f fakeStore) GetClientById(ctx context.Context, id pgtype.UUID) (db.Client, error) {
@@ -81,7 +81,7 @@ func TestHandleEventProcessesPayoutToSuccess(t *testing.T) {
 
 	statuses := make([]string, 0, 2)
 	providerCalled := false
-	webhookDeliveryCreated := false
+	webhookOutboxEventCreated := false
 	inTx := false
 
 	handler := NewHandler(fakeTxRunner{
@@ -126,22 +126,13 @@ func TestHandleEventProcessesPayoutToSuccess(t *testing.T) {
 						WebhookUrl: pgtype.Text{String: " https://example.com/webhooks/payouts ", Valid: true},
 					}, nil
 				},
-				createWebhookDelivery: func(_ context.Context, arg db.CreateWebhookDeliveryParams) (db.WebhookDelivery, error) {
-					webhookDeliveryCreated = true
-					if arg.PayoutID != payoutID {
-						t.Fatalf("expected webhook payout id %s, got %s", payoutID.String(), arg.PayoutID.String())
+				createOutboxEvent: func(_ context.Context, arg db.CreateOutboxEventParams) (db.OutboxEvent, error) {
+					webhookOutboxEventCreated = true
+					if arg.EventType != outbox.EventTypePayoutResultWebhook {
+						t.Fatalf("expected webhook outbox event type %s, got %s", outbox.EventTypePayoutResultWebhook, arg.EventType)
 					}
-					if arg.ClientID != clientID {
-						t.Fatalf("expected webhook client id %s, got %s", clientID.String(), arg.ClientID.String())
-					}
-					if arg.TargetUrl != "https://example.com/webhooks/payouts" {
-						t.Fatalf("expected trimmed webhook target url, got %q", arg.TargetUrl)
-					}
-					if arg.Status != "pending" {
-						t.Fatalf("expected webhook status pending, got %s", arg.Status)
-					}
-					if arg.AttemptCount != 0 {
-						t.Fatalf("expected webhook attempt count 0, got %d", arg.AttemptCount)
+					if arg.EntityID != payoutID {
+						t.Fatalf("expected webhook outbox entity id %s, got %s", payoutID.String(), arg.EntityID.String())
 					}
 
 					var payload outbox.PayoutResultWebhookPayload
@@ -157,6 +148,9 @@ func TestHandleEventProcessesPayoutToSuccess(t *testing.T) {
 					if payload.ClientID != clientID.String() {
 						t.Fatalf("expected payload client id %s, got %s", clientID.String(), payload.ClientID)
 					}
+					if payload.TargetURL != "https://example.com/webhooks/payouts" {
+						t.Fatalf("expected trimmed payload target url, got %q", payload.TargetURL)
+					}
 					if payload.Status != string(payoutdomain.StatusSucceeded) {
 						t.Fatalf("expected payload status succeeded, got %s", payload.Status)
 					}
@@ -164,7 +158,7 @@ func TestHandleEventProcessesPayoutToSuccess(t *testing.T) {
 						t.Fatalf("expected empty failure reason, got %q", payload.FailureReason)
 					}
 
-					return db.WebhookDelivery{}, nil
+					return db.OutboxEvent{}, nil
 				},
 				updatePayoutStatus: func(_ context.Context, arg db.UpdatePayoutStatusParams) (db.Payout, error) {
 					if arg.ID != payoutID {
@@ -227,8 +221,8 @@ func TestHandleEventProcessesPayoutToSuccess(t *testing.T) {
 	if statuses[1] != string(payoutdomain.StatusSucceeded) {
 		t.Fatalf("expected second status update to succeeded, got %s", statuses[1])
 	}
-	if !webhookDeliveryCreated {
-		t.Fatal("expected webhook delivery to be created")
+	if !webhookOutboxEventCreated {
+		t.Fatal("expected webhook outbox event to be created")
 	}
 }
 
@@ -272,11 +266,14 @@ func TestHandleEventPersistsFailedPayoutOutcome(t *testing.T) {
 						WebhookUrl: pgtype.Text{String: "https://example.com/webhooks/payouts", Valid: true},
 					}, nil
 				},
-				createWebhookDelivery: func(_ context.Context, arg db.CreateWebhookDeliveryParams) (db.WebhookDelivery, error) {
+				createOutboxEvent: func(_ context.Context, arg db.CreateOutboxEventParams) (db.OutboxEvent, error) {
+					if arg.EventType != outbox.EventTypePayoutResultWebhook {
+						t.Fatalf("expected webhook outbox event type %s, got %s", outbox.EventTypePayoutResultWebhook, arg.EventType)
+					}
 					if err := json.Unmarshal(arg.Payload, &webhookPayload); err != nil {
 						t.Fatalf("unmarshal webhook payload: %v", err)
 					}
-					return db.WebhookDelivery{}, nil
+					return db.OutboxEvent{}, nil
 				},
 				updatePayoutStatus: func(_ context.Context, arg db.UpdatePayoutStatusParams) (db.Payout, error) {
 					return dbPayout(t, payoutID, clientID, fundingSourceID, "125.50", "USDC", arg.Status, ""), nil
@@ -317,6 +314,9 @@ func TestHandleEventPersistsFailedPayoutOutcome(t *testing.T) {
 	}
 	if webhookPayload.Status != string(payoutdomain.StatusFailed) {
 		t.Fatalf("expected webhook payload status failed, got %s", webhookPayload.Status)
+	}
+	if webhookPayload.TargetURL != "https://example.com/webhooks/payouts" {
+		t.Fatalf("expected webhook target url, got %q", webhookPayload.TargetURL)
 	}
 	if webhookPayload.FailureReason != "provider rejected payout" {
 		t.Fatalf("expected webhook failure reason, got %q", webhookPayload.FailureReason)

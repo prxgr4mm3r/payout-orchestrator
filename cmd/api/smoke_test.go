@@ -102,6 +102,7 @@ func TestMVPPayoutSmoke(t *testing.T) {
 		outbox.Config{
 			PollInterval: 10 * time.Millisecond,
 			ClaimTimeout: time.Second,
+			EventTypes:   []string{outbox.EventTypeProcessPayout},
 		},
 	)
 
@@ -166,7 +167,7 @@ func TestMVPPayoutSmoke(t *testing.T) {
 
 	waitForOutboxProcessed(t, ctx, appPool, mustUUID(t, payout.ID))
 
-	assertPendingWebhookDelivery(t, ctx, queries, mustUUID(t, payout.ID), clientID, clientRecord.WebhookUrl.String, "succeeded")
+	assertPendingWebhookOutboxEvent(t, ctx, appPool, mustUUID(t, payout.ID), clientID, clientRecord.WebhookUrl.String, "succeeded")
 }
 
 func TestRabbitMQPayoutWorkerSmoke(t *testing.T) {
@@ -288,6 +289,7 @@ func TestRabbitMQPayoutWorkerSmoke(t *testing.T) {
 		outbox.Config{
 			PollInterval: 10 * time.Millisecond,
 			ClaimTimeout: time.Second,
+			EventTypes:   []string{outbox.EventTypeProcessPayout},
 		},
 	)
 
@@ -339,7 +341,7 @@ func TestRabbitMQPayoutWorkerSmoke(t *testing.T) {
 
 	waitForOutboxProcessed(t, ctx, appPool, mustUUID(t, payout.ID))
 
-	assertPendingWebhookDelivery(t, ctx, queries, mustUUID(t, payout.ID), clientID, clientRecord.WebhookUrl.String, "succeeded")
+	assertPendingWebhookOutboxEvent(t, ctx, appPool, mustUUID(t, payout.ID), clientID, clientRecord.WebhookUrl.String, "succeeded")
 }
 
 type smokeFundingSourceResponse struct {
@@ -351,10 +353,10 @@ type smokePayoutResponse struct {
 	Status string `json:"status"`
 }
 
-func assertPendingWebhookDelivery(
+func assertPendingWebhookOutboxEvent(
 	t *testing.T,
 	ctx context.Context,
-	queries *db.Queries,
+	pool *pgxpool.Pool,
 	payoutID pgtype.UUID,
 	clientID pgtype.UUID,
 	targetURL string,
@@ -362,30 +364,24 @@ func assertPendingWebhookDelivery(
 ) {
 	t.Helper()
 
-	deliveries, err := queries.ListWebhookDeliveriesByPayoutID(ctx, payoutID)
+	var (
+		eventStatus string
+		payloadRaw  []byte
+	)
+	err := pool.QueryRow(ctx, `
+		SELECT status, payload
+		FROM outbox_events
+		WHERE entity_id = $1 AND event_type = $2
+	`, payoutID, outbox.EventTypePayoutResultWebhook).Scan(&eventStatus, &payloadRaw)
 	if err != nil {
-		t.Fatalf("list webhook deliveries: %v", err)
+		t.Fatalf("load webhook outbox event: %v", err)
 	}
-	if len(deliveries) != 1 {
-		t.Fatalf("expected 1 webhook delivery, got %d", len(deliveries))
-	}
-
-	delivery := deliveries[0]
-	if delivery.ClientID != clientID {
-		t.Fatalf("expected webhook client id %s, got %s", clientID.String(), delivery.ClientID.String())
-	}
-	if delivery.TargetUrl != targetURL {
-		t.Fatalf("expected webhook target url %s, got %s", targetURL, delivery.TargetUrl)
-	}
-	if delivery.Status != "pending" {
-		t.Fatalf("expected webhook delivery status pending, got %s", delivery.Status)
-	}
-	if delivery.AttemptCount != 0 {
-		t.Fatalf("expected webhook delivery attempt count 0, got %d", delivery.AttemptCount)
+	if eventStatus != "pending" {
+		t.Fatalf("expected webhook outbox event status pending, got %s", eventStatus)
 	}
 
 	var payload outbox.PayoutResultWebhookPayload
-	if err := json.Unmarshal(delivery.Payload, &payload); err != nil {
+	if err := json.Unmarshal(payloadRaw, &payload); err != nil {
 		t.Fatalf("unmarshal webhook payload: %v", err)
 	}
 	if payload.EventType != outbox.EventTypePayoutResultWebhook {
@@ -396,6 +392,9 @@ func assertPendingWebhookDelivery(
 	}
 	if payload.ClientID != clientID.String() {
 		t.Fatalf("expected webhook payload client id %s, got %s", clientID.String(), payload.ClientID)
+	}
+	if payload.TargetURL != targetURL {
+		t.Fatalf("expected webhook payload target url %s, got %s", targetURL, payload.TargetURL)
 	}
 	if payload.Status != status {
 		t.Fatalf("expected webhook payload status %s, got %s", status, payload.Status)
@@ -414,8 +413,8 @@ func waitForOutboxProcessed(t *testing.T, ctx context.Context, pool *pgxpool.Poo
 		lastErr = pool.QueryRow(ctx, `
 			SELECT status, processed_at IS NOT NULL
 			FROM outbox_events
-			WHERE entity_id = $1
-		`, entityID).Scan(&lastStatus, &lastProcessed)
+			WHERE entity_id = $1 AND event_type = $2
+		`, entityID, outbox.EventTypeProcessPayout).Scan(&lastStatus, &lastProcessed)
 		if lastErr == nil && lastStatus == "processed" && lastProcessed {
 			return
 		}
