@@ -11,6 +11,7 @@ import (
 
 	payoutworker "github.com/prxgr4mm3r/payout-orchestrator/internal/apps/payoutworker"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/apps/payoutworker/execution"
+	rabbitmqbroker "github.com/prxgr4mm3r/payout-orchestrator/internal/broker/rabbitmq"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/db"
 	"github.com/prxgr4mm3r/payout-orchestrator/internal/platform/postgres"
 	platformrabbitmq "github.com/prxgr4mm3r/payout-orchestrator/internal/platform/rabbitmq"
@@ -37,8 +38,9 @@ func main() {
 	}
 	defer rabbitmqClient.Close()
 
-	if err := rabbitmqClient.EnsureQueue(payoutQueueName); err != nil {
-		log.Fatalf("ensure payout queue: %v", err)
+	payoutTopology := rabbitmqbroker.NewPayoutTopology(payoutQueueName)
+	if err := rabbitmqClient.EnsureTopology(payoutTopology); err != nil {
+		log.Fatalf("ensure payout topology: %v", err)
 	}
 
 	queries := db.New(dbPool)

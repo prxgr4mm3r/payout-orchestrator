@@ -8,11 +8,11 @@ import (
 )
 
 type fakePublisher struct {
-	publish func(ctx context.Context, queue string, body []byte) error
+	publish func(ctx context.Context, exchange, routingKey string, body []byte) error
 }
 
-func (f fakePublisher) Publish(ctx context.Context, queue string, body []byte) error {
-	return f.publish(ctx, queue, body)
+func (f fakePublisher) Publish(ctx context.Context, exchange, routingKey string, body []byte) error {
+	return f.publish(ctx, exchange, routingKey, body)
 }
 
 func TestPayoutPublisherDispatchesOutboxEvent(t *testing.T) {
@@ -27,10 +27,13 @@ func TestPayoutPublisherDispatchesOutboxEvent(t *testing.T) {
 
 	published := false
 	publisher := NewPayoutPublisher(fakePublisher{
-		publish: func(_ context.Context, queue string, body []byte) error {
+		publish: func(_ context.Context, exchange, routingKey string, body []byte) error {
 			published = true
-			if queue != "payout.jobs" {
-				t.Fatalf("expected queue payout.jobs, got %s", queue)
+			if exchange != PayoutExchangeName {
+				t.Fatalf("expected exchange %s, got %s", PayoutExchangeName, exchange)
+			}
+			if routingKey != PayoutRoutingKey {
+				t.Fatalf("expected routing key %s, got %s", PayoutRoutingKey, routingKey)
 			}
 
 			got, err := DecodePayoutJob(body)
@@ -52,12 +55,28 @@ func TestPayoutPublisherDispatchesOutboxEvent(t *testing.T) {
 
 			return nil
 		},
-	}, "payout.jobs")
+	}, PayoutExchangeName, PayoutRoutingKey)
 
 	if err := publisher.Dispatch(context.Background(), expected); err != nil {
 		t.Fatalf("dispatch payout event: %v", err)
 	}
 	if !published {
 		t.Fatal("expected payout event to be published")
+	}
+}
+
+func TestNewPayoutTopologyUsesConfiguredQueue(t *testing.T) {
+	t.Parallel()
+
+	topology := NewPayoutTopology("payout.jobs.test")
+
+	if topology.ExchangeName != PayoutExchangeName {
+		t.Fatalf("expected exchange %s, got %s", PayoutExchangeName, topology.ExchangeName)
+	}
+	if topology.QueueName != "payout.jobs.test" {
+		t.Fatalf("expected queue payout.jobs.test, got %s", topology.QueueName)
+	}
+	if topology.RoutingKey != PayoutRoutingKey {
+		t.Fatalf("expected routing key %s, got %s", PayoutRoutingKey, topology.RoutingKey)
 	}
 }

@@ -232,8 +232,9 @@ func TestRabbitMQPayoutWorkerSmoke(t *testing.T) {
 		}
 	})
 
-	if err := publisherClient.EnsureQueue(queueName); err != nil {
-		t.Fatalf("ensure payout queue: %v", err)
+	payoutTopology := rabbitmqbroker.NewPayoutTopology(queueName)
+	if err := publisherClient.EnsureTopology(payoutTopology); err != nil {
+		t.Fatalf("ensure payout topology: %v", err)
 	}
 	t.Cleanup(func() {
 		deleteRabbitMQQueue(t, rabbitmqURL, queueName)
@@ -281,7 +282,7 @@ func TestRabbitMQPayoutWorkerSmoke(t *testing.T) {
 	payoutsSvc := payoutservice.NewServiceWithTx(queries, payoutservice.NewDBTxRunner(appPool, queries))
 	outboxRelay := outbox.NewRelay(
 		outbox.NewDBTxRunner(appPool, queries),
-		rabbitmqbroker.NewPayoutPublisher(publisherClient, queueName),
+		rabbitmqbroker.NewPayoutPublisher(publisherClient, payoutTopology.ExchangeName, payoutTopology.RoutingKey),
 		logger,
 		outbox.Config{
 			PollInterval: 10 * time.Millisecond,

@@ -3,9 +3,14 @@ package rabbitmq
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
+
+const defaultPublishConfirmTimeout = 5 * time.Second
 
 type Delivery interface {
 	Body() []byte
@@ -13,9 +18,19 @@ type Delivery interface {
 	Nack(requeue bool) error
 }
 
+type Topology struct {
+	ExchangeName string
+	QueueName    string
+	RoutingKey   string
+}
+
 type Client struct {
-	conn    *amqp.Connection
-	channel *amqp.Channel
+	conn                  *amqp.Connection
+	channel               *amqp.Channel
+	publishConfirmTimeout time.Duration
+	publishConfirmations  <-chan amqp.Confirmation
+	publishReturns        <-chan amqp.Return
+	publishMu             sync.Mutex
 }
 
 func Open(url string) (*Client, error) {
@@ -34,9 +49,18 @@ func Open(url string) (*Client, error) {
 		return nil, err
 	}
 
+	if err := channel.Confirm(false); err != nil {
+		_ = channel.Close()
+		_ = conn.Close()
+		return nil, err
+	}
+
 	return &Client{
-		conn:    conn,
-		channel: channel,
+		conn:                  conn,
+		channel:               channel,
+		publishConfirmTimeout: defaultPublishConfirmTimeout,
+		publishConfirmations:  channel.NotifyPublish(make(chan amqp.Confirmation, 1)),
+		publishReturns:        channel.NotifyReturn(make(chan amqp.Return, 1)),
 	}, nil
 }
 
@@ -56,6 +80,45 @@ func (c *Client) Close() error {
 	}
 
 	return closeErr
+}
+
+func (c *Client) EnsureTopology(topology Topology) error {
+	if c == nil || c.channel == nil {
+		return errors.New("rabbitmq client is not configured")
+	}
+	if topology.ExchangeName == "" {
+		return errors.New("rabbitmq exchange name is required")
+	}
+	if topology.QueueName == "" {
+		return errors.New("rabbitmq queue name is required")
+	}
+	if topology.RoutingKey == "" {
+		return errors.New("rabbitmq routing key is required")
+	}
+
+	if err := c.channel.ExchangeDeclare(
+		topology.ExchangeName,
+		amqp.ExchangeDirect,
+		true,
+		false,
+		false,
+		false,
+		nil,
+	); err != nil {
+		return err
+	}
+
+	if err := c.EnsureQueue(topology.QueueName); err != nil {
+		return err
+	}
+
+	return c.channel.QueueBind(
+		topology.QueueName,
+		topology.RoutingKey,
+		topology.ExchangeName,
+		false,
+		nil,
+	)
 }
 
 func (c *Client) EnsureQueue(name string) error {
@@ -78,26 +141,90 @@ func (c *Client) EnsureQueue(name string) error {
 	return err
 }
 
-func (c *Client) Publish(ctx context.Context, queue string, body []byte) error {
+func (c *Client) Publish(ctx context.Context, exchange, routingKey string, body []byte) error {
 	if c == nil || c.channel == nil {
 		return errors.New("rabbitmq client is not configured")
 	}
-	if queue == "" {
-		return errors.New("rabbitmq queue name is required")
+	if exchange == "" {
+		return errors.New("rabbitmq exchange name is required")
+	}
+	if routingKey == "" {
+		return errors.New("rabbitmq routing key is required")
+	}
+	if c.publishConfirmations == nil {
+		return errors.New("rabbitmq publish confirmations are not configured")
+	}
+	if c.publishReturns == nil {
+		return errors.New("rabbitmq publish returns are not configured")
 	}
 
-	return c.channel.PublishWithContext(
+	c.publishMu.Lock()
+	defer c.publishMu.Unlock()
+
+	if err := c.channel.PublishWithContext(
 		ctx,
-		"",
-		queue,
-		false,
+		exchange,
+		routingKey,
+		true,
 		false,
 		amqp.Publishing{
 			ContentType:  "application/json",
 			Body:         body,
 			DeliveryMode: amqp.Persistent,
 		},
-	)
+	); err != nil {
+		return err
+	}
+
+	return c.waitForPublishConfirm(ctx)
+}
+
+func (c *Client) waitForPublishConfirm(ctx context.Context) error {
+	timeout := c.publishConfirmTimeout
+	if timeout <= 0 {
+		timeout = defaultPublishConfirmTimeout
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	var returnErr error
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return errors.New("rabbitmq publish confirmation timed out")
+	case returned, ok := <-c.publishReturns:
+		if !ok {
+			return errors.New("rabbitmq publish returns channel closed")
+		}
+		returnErr = fmt.Errorf("rabbitmq publish was returned reply_code=%d reply_text=%q", returned.ReplyCode, returned.ReplyText)
+	case confirmation, ok := <-c.publishConfirmations:
+		if !ok {
+			return errors.New("rabbitmq publish confirmations channel closed")
+		}
+		if !confirmation.Ack {
+			return fmt.Errorf("rabbitmq publish was negatively acknowledged delivery_tag=%d", confirmation.DeliveryTag)
+		}
+
+		return nil
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return errors.New("rabbitmq publish confirmation timed out")
+	case confirmation, ok := <-c.publishConfirmations:
+		if !ok {
+			return errors.New("rabbitmq publish confirmations channel closed")
+		}
+		if !confirmation.Ack {
+			return fmt.Errorf("rabbitmq publish was negatively acknowledged delivery_tag=%d", confirmation.DeliveryTag)
+		}
+
+		return returnErr
+	}
 }
 
 func (c *Client) Consume(ctx context.Context, queue string, handler func(context.Context, Delivery) error) error {

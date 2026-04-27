@@ -253,6 +253,15 @@ Used for:
 - payout processing jobs
 - webhook jobs
 
+Payout jobs use an explicit durable direct exchange and durable queue:
+- exchange: `payout.jobs`
+- queue: `payout.jobs`
+- routing key: `payout.process`
+
+Outbox publishers publish payout jobs as persistent JSON messages and wait for a
+RabbitMQ publisher confirmation before marking the originating outbox event as
+processed in PostgreSQL.
+
 ### Redis
 Auxiliary acceleration layer.
 
@@ -637,6 +646,7 @@ Mitigation:
 - API does not publish directly in the critical path
 - outbox event remains in PostgreSQL
 - publisher retries later
+- publisher confirmation failures leave the outbox event retryable
 
 ### 18.2 Message published but worker crashes before completion
 Mitigation:
@@ -762,7 +772,7 @@ flowchart TB
 ```mermaid
 flowchart LR
     OutboxRelay[Outbox relay]
-    DefaultExchange[Default direct exchange]
+    PayoutExchange[(Durable direct exchange: payout.jobs)]
     PayoutQueue[[Durable queue: payout.jobs]]
 
     subgraph Consumers[Payout worker consumers]
@@ -770,8 +780,9 @@ flowchart LR
         WorkerB[Payout worker B]
     end
 
-    OutboxRelay -->|persistent JSON message routing_key=payout.jobs| DefaultExchange
-    DefaultExchange --> PayoutQueue
+    OutboxRelay -->|persistent JSON message routing_key=payout.process| PayoutExchange
+    PayoutExchange -->|durable binding payout.process| PayoutQueue
+    PayoutExchange -->|publisher confirm ack/nack| OutboxRelay
     PayoutQueue -->|manual delivery| WorkerA
     PayoutQueue -->|manual delivery| WorkerB
     WorkerA -->|Ack on success| PayoutQueue

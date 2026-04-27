@@ -68,13 +68,14 @@ func main() {
 		}
 		defer rabbitmqClient.Close()
 
-		if err := rabbitmqClient.EnsureQueue(payoutQueueName); err != nil {
-			log.Fatalf("ensure payout queue: %v", err)
+		payoutTopology := rabbitmqbroker.NewPayoutTopology(payoutQueueName)
+		if err := rabbitmqClient.EnsureTopology(payoutTopology); err != nil {
+			log.Fatalf("ensure payout topology: %v", err)
 		}
 
 		outboxRelay = outbox.NewRelay(
 			outbox.NewDBTxRunner(dbPool, queries),
-			rabbitmqbroker.NewPayoutPublisher(rabbitmqClient, payoutQueueName),
+			rabbitmqbroker.NewPayoutPublisher(rabbitmqClient, payoutTopology.ExchangeName, payoutTopology.RoutingKey),
 			log.Default(),
 			outbox.Config{
 				PollInterval: pollInterval,
